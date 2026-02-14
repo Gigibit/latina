@@ -5,6 +5,7 @@ from trading_bot.bot.service import (
     generate_suggestion,
     generate_weekly_chat_suggestion,
 )
+from trading_bot.bot.web_candidates import get_web_candidates, scrape_yahoo_most_active
 
 
 class DummyRetriever:
@@ -64,8 +65,21 @@ def test_generate_suggestion_with_mocks(monkeypatch):
 
 def test_extract_symbols_with_fallback(monkeypatch):
     monkeypatch.setenv("DEFAULT_CANDIDATES", "SPY,QQQ")
+    monkeypatch.setenv("USE_WEB_CANDIDATES", "false")
     assert _extract_symbols_from_message("what should I buy next week?") == ["SPY", "QQQ"]
     assert _extract_symbols_from_message("is nvda better than aapl?") == ["AAPL", "NVDA"]
+
+
+def test_extract_symbols_uses_web_candidates(monkeypatch):
+    monkeypatch.setenv("USE_WEB_CANDIDATES", "true")
+    monkeypatch.setenv("WEB_CANDIDATES_LIMIT", "3")
+    monkeypatch.setattr(
+        "trading_bot.bot.service.get_web_candidates",
+        lambda limit=10: ["TSLA", "AMD", "META"][:limit],
+    )
+
+    result = _extract_symbols_from_message("what suggestion for next week?")
+    assert result == ["TSLA", "AMD", "META"]
 
 
 def test_rank_weekly_candidates(monkeypatch):
@@ -79,6 +93,10 @@ def test_rank_weekly_candidates(monkeypatch):
 
 def test_generate_weekly_chat_suggestion(monkeypatch):
     _patch_dependencies(monkeypatch)
+    monkeypatch.setattr(
+        "trading_bot.bot.service.get_web_candidates",
+        lambda limit=10: ["AAPL", "NVDA", "MSFT"],
+    )
 
     result = generate_weekly_chat_suggestion(
         "what suggestion do you have for the next week?",
@@ -88,3 +106,30 @@ def test_generate_weekly_chat_suggestion(monkeypatch):
     assert result["decision"]["top_pick"] == "NVDA"
     assert result["ranked_candidates"][0]["symbol"] == "NVDA"
     assert "Prefer NVDA" in result["answer"]
+
+
+def test_scrape_yahoo_most_active_parses_html(monkeypatch):
+    html = """
+    <html><body>
+      <a href=\"/quote/NVDA/\">NVDA</a>
+      <a href=\"/quote/TSLA?param=1\">TSLA</a>
+      <a href=\"/quote/AAPL/\">AAPL</a>
+    </body></html>
+    """
+    monkeypatch.setattr("trading_bot.bot.web_candidates._download_html", lambda url: html)
+
+    result = scrape_yahoo_most_active(limit=2)
+
+    assert result == ["NVDA", "TSLA"]
+
+
+def test_get_web_candidates_fallback_on_error(monkeypatch):
+    monkeypatch.setenv("DEFAULT_CANDIDATES", "SPY,QQQ")
+    monkeypatch.setattr(
+        "trading_bot.bot.web_candidates.scrape_yahoo_most_active",
+        lambda limit=10: (_ for _ in ()).throw(ValueError("boom")),
+    )
+
+    result = get_web_candidates(limit=2)
+
+    assert result == ["SPY", "QQQ"]

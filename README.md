@@ -43,3 +43,9 @@ curl -X POST http://127.0.0.1:8000/api/chat/ \
 
 - Educational use only. Not financial advice.
 - If dependencies are missing, the service returns clear install guidance errors.
+
+### Web scraping candidates
+
+- If no explicit ticker is provided in the chat message, the service can scrape Yahoo Finance Most Active and use those symbols as candidate assets.
+- Configure with `.env`: `USE_WEB_CANDIDATES=true` and `WEB_CANDIDATES_LIMIT=10`.
+- If scraping fails, it falls back to `DEFAULT_CANDIDATES`.

@@ -7,6 +7,7 @@ from dataclasses import asdict, is_dataclass
 from trading_bot.bot.data_sources import MarketSnapshot, get_market_snapshot
 from trading_bot.bot.llm import LLMDecider
 from trading_bot.bot.retrieval import EmbeddingRetriever
+from trading_bot.bot.web_candidates import get_web_candidates
 
 DEFAULT_CANDIDATES = ["AAPL", "MSFT", "NVDA", "SPY", "GOOGL", "AMZN"]
 
@@ -95,7 +96,14 @@ def _extract_symbols_from_message(message: str) -> list[str]:
     known_tokens = {token for token in free_tokens if token in candidate_set}
 
     explicit = sorted(dollar_tickers | known_tokens | free_tokens)
-    return explicit or candidates
+    if explicit:
+        return explicit
+
+    use_web_candidates = os.getenv("USE_WEB_CANDIDATES", "true").lower() == "true"
+    if use_web_candidates:
+        return get_web_candidates(limit=int(os.getenv("WEB_CANDIDATES_LIMIT", "10")))
+
+    return candidates
 
 
 def _rank_weekly_candidates(symbols: list[str]) -> list[dict]:
