@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 
-from trading_bot.bot.data_sources import get_market_snapshot
+from trading_bot.bot.data_sources import fetch_trending_symbols, get_market_snapshot
 from trading_bot.bot.llm import LLMDecider
 from trading_bot.bot.retrieval import EmbeddingRetriever
 
@@ -57,4 +57,39 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
         "model": model,
         "selected_context": [chunk.__dict__ for chunk in top_chunks],
         "decision": decision,
+    }
+
+
+def get_best_candidates(limit: int = 5, user_risk_profile: str = "medium") -> dict:
+    symbols = fetch_trending_symbols(limit=max(limit * 3, 10))
+    candidates = []
+
+    for symbol in symbols:
+        try:
+            snapshot = get_market_snapshot(symbol)
+        except ValueError:
+            continue
+
+        relative_volume = snapshot.latest_volume / max(snapshot.avg_volume_20d, 1)
+        risk_multiplier = {"low": 0.6, "medium": 1.0, "high": 1.35}.get(
+            user_risk_profile.lower(), 1.0
+        )
+        score = (snapshot.pct_change_5d + (relative_volume - 1) * 8) * risk_multiplier
+
+        candidates.append(
+            {
+                "symbol": snapshot.symbol,
+                "latest_close": round(snapshot.latest_close, 2),
+                "pct_change_5d": round(snapshot.pct_change_5d, 2),
+                "pct_change_20d": round(snapshot.pct_change_20d, 2),
+                "relative_volume": round(relative_volume, 2),
+                "score": round(score, 2),
+            }
+        )
+
+    top_candidates = sorted(candidates, key=lambda item: item["score"], reverse=True)[:limit]
+    return {
+        "risk_profile": user_risk_profile,
+        "source": "Yahoo Finance trending",
+        "candidates": top_candidates,
     }
