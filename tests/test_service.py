@@ -1,4 +1,4 @@
-from trading_bot.bot.service import generate_suggestion
+from trading_bot.bot.service import generate_suggestion, get_best_candidates
 
 
 class DummyRetriever:
@@ -42,3 +42,59 @@ def test_generate_suggestion_with_mocks(monkeypatch):
     assert result["provider"] == "openai"
     assert result["decision"]["action"] == "HOLD"
     assert len(result["selected_context"]) == 4
+
+
+def test_get_best_candidates_ranks_by_score(monkeypatch):
+    monkeypatch.setattr(
+        "trading_bot.bot.service.fetch_trending_symbols",
+        lambda limit: ["AAA", "BBB", "CCC"],
+    )
+
+    snapshots = {
+        "AAA": type(
+            "Snapshot",
+            (),
+            {
+                "symbol": "AAA",
+                "latest_close": 100.0,
+                "pct_change_5d": 4.0,
+                "pct_change_20d": 9.0,
+                "avg_volume_20d": 100.0,
+                "latest_volume": 120.0,
+            },
+        )(),
+        "BBB": type(
+            "Snapshot",
+            (),
+            {
+                "symbol": "BBB",
+                "latest_close": 50.0,
+                "pct_change_5d": 6.0,
+                "pct_change_20d": 11.0,
+                "avg_volume_20d": 100.0,
+                "latest_volume": 160.0,
+            },
+        )(),
+        "CCC": type(
+            "Snapshot",
+            (),
+            {
+                "symbol": "CCC",
+                "latest_close": 30.0,
+                "pct_change_5d": -1.0,
+                "pct_change_20d": 2.0,
+                "avg_volume_20d": 100.0,
+                "latest_volume": 90.0,
+            },
+        )(),
+    }
+    monkeypatch.setattr(
+        "trading_bot.bot.service.get_market_snapshot",
+        lambda symbol: snapshots[symbol],
+    )
+
+    result = get_best_candidates(limit=2, user_risk_profile="medium")
+
+    assert result["risk_profile"] == "medium"
+    assert [candidate["symbol"] for candidate in result["candidates"]] == ["BBB", "AAA"]
+    assert len(result["candidates"]) == 2
