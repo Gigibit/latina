@@ -15,6 +15,7 @@ from trading_bot.bot.data_sources import (
     get_market_snapshot,
     resolve_candle_size,
 )
+from trading_bot.bot.etoro import execute_etoro_action
 from trading_bot.bot.llm import LLMDecider
 from trading_bot.bot.retrieval import FaissEmbeddingRetriever
 
@@ -120,6 +121,28 @@ def _is_env_flag_enabled(name: str, default: bool = True) -> bool:
     return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _weighted_behavior_probability(nearest_behaviors, samples: list[dict]) -> tuple[float, float]:
+    weighted_buy = 0.0
+    total_weight = 0.0
+
+    for chunk in nearest_behaviors:
+        if chunk.index is None:
+            continue
+        action = samples[chunk.index]["action"]
+        similarity_weight = max(float(getattr(chunk, "score", 0.0)), 0.0)
+        weight = similarity_weight + 1e-6
+        total_weight += weight
+        if action == "BUY":
+            weighted_buy += weight
+
+    if total_weight <= 0:
+        return 0.5, 1.0
+
+    buy_probability = weighted_buy / total_weight
+    uncertainty = 1 - min(total_weight / max(len(nearest_behaviors), 1), 1.0)
+    return buy_probability, uncertainty
+
+
 def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
     candle_size = os.getenv("CANDLE_SIZE", "1d")
     raw_rag_inference_number = os.getenv(
@@ -139,10 +162,9 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
 
     nearest_behaviors = retriever.top_k(query=query, corpus=corpus, k=min(7, len(corpus)))
 
-    selected = [samples[chunk.index] for chunk in nearest_behaviors if chunk.index is not None]
-    buy_count = sum(1 for item in selected if item["action"] == "BUY")
-    total_count = max(len(selected), 1)
-    buy_probability = buy_count / total_count
+    buy_probability, retrieval_uncertainty = _weighted_behavior_probability(
+        nearest_behaviors, samples
+    )
 
     technical = compute_technical_indicators(symbol)
     fundamentals = fetch_fundamental_metrics(symbol)
@@ -165,9 +187,18 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
 
     macro_penalty = min(macro_delta / 100, 0.04)
 
+    uncertainty_penalty = 0.06 if retrieval_uncertainty > 0.35 else 0.0
+
     adjusted_buy_probability = min(
         0.98,
-        max(0.02, buy_probability + indicator_bias + fundamental_bias - macro_penalty),
+        max(
+            0.02,
+            buy_probability
+            + indicator_bias
+            + fundamental_bias
+            - macro_penalty
+            - uncertainty_penalty,
+        ),
     )
 
     provider = os.getenv("LLM_PROVIDER", "openai")
@@ -182,7 +213,9 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
 
     context_lines = [
         f"- {chunk.text} "
-        f"(similarity={chunk.score:.3f}, next_action={samples[chunk.index]['action']})"
+        f"(similarity={chunk.score:.3f}, "
+        f"next_action={samples[chunk.index]['action']}, "
+        f"next_move={samples[chunk.index]['next_pct_change']:.2f}%)"
         for chunk in nearest_behaviors
         if chunk.index is not None
     ]
@@ -202,12 +235,19 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
         f"Fundamental metrics: PE={fundamentals.pe_ratio}, EPS={fundamentals.eps}, "
         f"Debt/Equity={fundamentals.debt_to_equity}, MarketCap={fundamentals.market_cap}.\n"
         f"Macro delta absolute mean: {macro_delta:.4f}.\n"
+        f"Retrieval uncertainty score (0=low, 1=high): {retrieval_uncertainty:.3f}.\n"
         f"Selected market context:\n{context_blob}\n"
-        f"Predict whether next {candle_size} should be BUY or SELL, "
-        "include probability and concise risk notes."
+        "Return strict JSON with keys action, confidence, reasoning, risk_notes. "
+        f"Predict whether next {candle_size} should be BUY, SELL, or HOLD. "
+        "Use HOLD when evidence is contradictory or uncertainty is high."
     )
 
     decision = decider.decide(prompt)
+    etoro_result = execute_etoro_action(
+        symbol=symbol,
+        action=str(decision.get("action", "HOLD")),
+        confidence=decision.get("confidence"),
+    )
     return {
         "symbol": symbol.upper(),
         "risk_profile": user_risk_profile,
@@ -222,7 +262,9 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
         "buy_probability": round(adjusted_buy_probability, 4),
         "sell_probability": round(1 - adjusted_buy_probability, 4),
         "selected_context": [chunk.__dict__ for chunk in nearest_behaviors],
+        "retrieval_uncertainty": round(retrieval_uncertainty, 4),
         "decision": decision,
+        "etoro_execution": etoro_result,
     }
 
 
