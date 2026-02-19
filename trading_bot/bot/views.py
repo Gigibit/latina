@@ -4,6 +4,7 @@ from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_GET
 
+from trading_bot.bot.research_session import research_sessions
 from trading_bot.bot.service import generate_suggestion, get_best_candidates, get_market_monitor
 
 
@@ -14,11 +15,39 @@ def dashboard_view(request):
 
 @require_GET
 def trading_suggestion_view(request):
+    async_mode = request.GET.get("async", "true").lower() in {"1", "true", "yes", "on"}
+    status_only = request.GET.get("status", "false").lower() in {"1", "true", "yes", "on"}
+    session_id = request.GET.get("session_id")
     symbols_raw = request.GET.get("symbols")
     symbol = request.GET.get("symbol", "AAPL")
     risk_profile = request.GET.get("risk", "medium")
 
     try:
+        if async_mode:
+            if not session_id:
+                if not request.session.session_key:
+                    request.session.create()
+                session_id = request.session.session_key
+
+            if status_only:
+                job = research_sessions.get(session_id)
+                if not job:
+                    return JsonResponse({"error": "Unknown research session."}, status=404)
+            else:
+                job = research_sessions.get_or_create(
+                    session_id=session_id, risk_profile=risk_profile
+                )
+
+            return JsonResponse(
+                {
+                    "session_id": session_id,
+                    "status": job.status,
+                    "stream_log": job.stream_log,
+                    "result": job.result,
+                    "error": job.error,
+                }
+            )
+
         if symbols_raw:
             symbols = [item.strip() for item in symbols_raw.split(",") if item.strip()]
             payload = {

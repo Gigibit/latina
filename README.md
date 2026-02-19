@@ -29,11 +29,11 @@ python manage.py runserver
 
 ## Endpoints
 
-- `GET /api/suggestion/?symbol=AAPL&risk=medium`
+- `GET /api/suggestion/?risk=medium` (async by default; symbol selection is system-managed via web scraping + sentiment)
 - `GET /api/candidates/?limit=5&risk=medium`
 - `GET /api/market-monitor/?limit=5`
 
-Example response (`/api/suggestion/`):
+Example response (`/api/suggestion/`, once async research is completed):
 
 ```json
 {
@@ -87,3 +87,12 @@ Set these `.env` variables to enable order execution:
 - `ETORO_AUTOTRADE_STATE_FILE` to store cooldown state
 
 When action is `HOLD`, the API call is skipped and cooldown still gets updated if HOLD is enabled.
+
+
+### Async research sessions
+
+- Suggestion requests now run asynchronously and are bound to a session id.
+- Poll status with `GET /api/suggestion/?async=true&status=true&session_id=<id>`.
+- `stream_log` is preserved and updated while research is running so humans can follow progress.
+- The engine auto-selects symbols from scraped market trends + sentiment analysis; the UI no longer accepts manual symbol input.
+- `SYMBOL_ACTION_ACCEPTANCE_THRESHOLD` enforces a minimum confidence. If confidence is below threshold, action is forced to `HOLD`.
