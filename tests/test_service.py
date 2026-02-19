@@ -6,7 +6,10 @@ class DummyRetriever:
         self.model_name = model_name
 
     def top_k(self, query: str, corpus: list[str], k: int = 3):
-        return [type("Chunk", (), {"text": item, "score": 0.9})() for item in corpus[:k]]
+        return [
+            type("Chunk", (), {"text": item, "score": 0.9, "index": idx})()
+            for idx, item in enumerate(corpus[:k])
+        ]
 
 
 class DummyDecider:
@@ -17,8 +20,8 @@ class DummyDecider:
 
     def decide(self, prompt: str):
         return {
-            "action": "HOLD",
-            "confidence": 60,
+            "action": "BUY",
+            "confidence": 74,
             "reasoning": "test reasoning",
             "risk_notes": "test risk",
         }
@@ -28,20 +31,31 @@ def test_generate_suggestion_with_mocks(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
     monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setenv("CANDLE_SIZE", "1d")
+    monkeypatch.setenv("CANDLES_RAG_INFERENCE_NUMER", "10")
 
     monkeypatch.setattr(
-        "trading_bot.bot.service.build_symbol_corpus",
-        lambda symbol: ["context 1", "context 2", "context 3", "context 4"],
+        "trading_bot.bot.service._build_behavior_samples",
+        lambda symbol, candle_size, rag_inference_number: (
+            [
+                {"text": "context 1", "action": "BUY", "next_pct_change": 1.1},
+                {"text": "context 2", "action": "SELL", "next_pct_change": -0.6},
+                {"text": "context 3", "action": "BUY", "next_pct_change": 0.7},
+                {"text": "context 4", "action": "BUY", "next_pct_change": 0.5},
+            ],
+            "query",
+        ),
     )
-    monkeypatch.setattr("trading_bot.bot.service.EmbeddingRetriever", DummyRetriever)
+    monkeypatch.setattr("trading_bot.bot.service.FaissEmbeddingRetriever", DummyRetriever)
     monkeypatch.setattr("trading_bot.bot.service.LLMDecider", DummyDecider)
 
     result = generate_suggestion("AAPL", "medium")
 
     assert result["symbol"] == "AAPL"
     assert result["provider"] == "openai"
-    assert result["decision"]["action"] == "HOLD"
+    assert result["decision"]["action"] == "BUY"
     assert len(result["selected_context"]) == 4
+    assert result["buy_probability"] == 0.75
 
 
 def test_get_best_candidates_ranks_by_score(monkeypatch):
