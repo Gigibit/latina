@@ -15,6 +15,7 @@ from trading_bot.bot.data_sources import (
     get_market_snapshot,
     resolve_candle_size,
 )
+from trading_bot.bot.etoro import execute_etoro_action
 from trading_bot.bot.llm import LLMDecider
 from trading_bot.bot.retrieval import FaissEmbeddingRetriever
 
@@ -242,6 +243,11 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
     )
 
     decision = decider.decide(prompt)
+    etoro_result = execute_etoro_action(
+        symbol=symbol,
+        action=str(decision.get("action", "HOLD")),
+        confidence=decision.get("confidence"),
+    )
     return {
         "symbol": symbol.upper(),
         "risk_profile": user_risk_profile,
@@ -258,6 +264,7 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
         "selected_context": [chunk.__dict__ for chunk in nearest_behaviors],
         "retrieval_uncertainty": round(retrieval_uncertainty, 4),
         "decision": decision,
+        "etoro_execution": etoro_result,
     }
 
 

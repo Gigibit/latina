@@ -79,6 +79,10 @@ def test_generate_suggestion_with_mocks(monkeypatch):
     monkeypatch.setattr("trading_bot.bot.service.average_macro_delta", lambda indicators: 0.0)
     monkeypatch.setattr("trading_bot.bot.service.FaissEmbeddingRetriever", DummyRetriever)
     monkeypatch.setattr("trading_bot.bot.service.LLMDecider", DummyDecider)
+    monkeypatch.setattr(
+        "trading_bot.bot.service.execute_etoro_action",
+        lambda **kwargs: {"status": "skipped"},
+    )
 
     result = generate_suggestion("AAPL", "medium")
 
@@ -89,6 +93,7 @@ def test_generate_suggestion_with_mocks(monkeypatch):
     assert result["buy_probability"] > 0.75
     assert result["x_sentiment"]["weight"] == 0.3
     assert result["technical_indicators"]["sma_20"] == 120.0
+    assert result["etoro_execution"]["status"] == "skipped"
 
 
 def test_get_best_candidates_ranks_by_score(monkeypatch):
