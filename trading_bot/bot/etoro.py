@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -44,7 +44,7 @@ def _can_execute(symbol: str, action: str) -> tuple[bool, str | None, float]:
 
     state = _load_state()
     state_key = f"{symbol.upper()}:{action.upper()}"
-    now = datetime.now(tz=UTC).timestamp()
+    now = datetime.now(tz=timezone.utc).timestamp()
     last_timestamp = float(state.get(state_key, 0.0))
     elapsed = now - last_timestamp
 
@@ -57,7 +57,7 @@ def _can_execute(symbol: str, action: str) -> tuple[bool, str | None, float]:
 def _record_execution(symbol: str, action: str) -> None:
     state = _load_state()
     state_key = f"{symbol.upper()}:{action.upper()}"
-    state[state_key] = datetime.now(tz=UTC).timestamp()
+    state[state_key] = datetime.now(tz=timezone.utc).timestamp()
     _save_state(state)
 
 

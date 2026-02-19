@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 from django.http import JsonResponse
+from django.shortcuts import render
 from django.views.decorators.http import require_GET
 
 from trading_bot.bot.service import generate_suggestion, get_best_candidates, get_market_monitor
+
+
+@require_GET
+def dashboard_view(request):
+    return render(request, "bot/dashboard.html")
 
 
 @require_GET
