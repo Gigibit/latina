@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date
+from statistics import mean
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -15,6 +17,33 @@ class MarketSnapshot:
     pct_change_20d: float
     avg_volume_20d: float
     latest_volume: float
+
+
+@dataclass
+class TechnicalIndicators:
+    sma_20: float
+    sma_50: float
+    rsi_14: float
+    macd: float
+    macd_signal: float
+    bollinger_upper: float
+    bollinger_lower: float
+
+
+@dataclass
+class FundamentalMetrics:
+    pe_ratio: float | None
+    eps: float | None
+    debt_to_equity: float | None
+    market_cap: float | None
+
+
+@dataclass
+class MacroIndicator:
+    series: str
+    latest_value: float
+    previous_value: float
+    delta: float
 
 
 def fetch_trending_symbols(region: str = "US", limit: int = 10) -> list[str]:
@@ -118,3 +147,154 @@ def fetch_x_sentiment_scores(symbol: str, days: list[date]) -> dict[date, float]
         scores[day] = round(normalized, 4)
 
     return scores
+
+
+def compute_technical_indicators(symbol: str, lookback_days: int = 180) -> TechnicalIndicators:
+    history = get_candle_history(symbol=symbol, candle_size="1d", lookback_candles=lookback_days)
+    if len(history) < 60:
+        raise ValueError(f"Not enough data found for symbol '{symbol}' to compute indicators.")
+
+    closes = history["Close"].astype(float)
+    sma_20 = float(closes.rolling(window=20).mean().iloc[-1])
+    sma_50 = float(closes.rolling(window=50).mean().iloc[-1])
+
+    delta = closes.diff()
+    gains = delta.clip(lower=0)
+    losses = -delta.clip(upper=0)
+    avg_gain = gains.rolling(window=14).mean().iloc[-1]
+    avg_loss = losses.rolling(window=14).mean().iloc[-1]
+    if avg_loss == 0:
+        rsi_14 = 100.0
+    else:
+        rs = avg_gain / avg_loss
+        rsi_14 = float(100 - (100 / (1 + rs)))
+
+    ema_12 = closes.ewm(span=12, adjust=False).mean()
+    ema_26 = closes.ewm(span=26, adjust=False).mean()
+    macd_line = ema_12 - ema_26
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+
+    rolling_std = closes.rolling(window=20).std()
+    bollinger_mid = closes.rolling(window=20).mean()
+    upper = bollinger_mid + (rolling_std * 2)
+    lower = bollinger_mid - (rolling_std * 2)
+
+    return TechnicalIndicators(
+        sma_20=sma_20,
+        sma_50=sma_50,
+        rsi_14=rsi_14,
+        macd=float(macd_line.iloc[-1]),
+        macd_signal=float(signal_line.iloc[-1]),
+        bollinger_upper=float(upper.iloc[-1]),
+        bollinger_lower=float(lower.iloc[-1]),
+    )
+
+
+def fetch_fundamental_metrics(symbol: str) -> FundamentalMetrics:
+    try:
+        import yfinance as yf
+    except ImportError as exc:
+        raise RuntimeError(
+            "yfinance is not installed. Install dependencies from requirements.txt"
+        ) from exc
+
+    ticker = yf.Ticker(symbol)
+    info = ticker.info or {}
+    return FundamentalMetrics(
+        pe_ratio=_safe_float(info.get("forwardPE") or info.get("trailingPE")),
+        eps=_safe_float(info.get("trailingEps") or info.get("epsCurrentYear")),
+        debt_to_equity=_safe_float(info.get("debtToEquity")),
+        market_cap=_safe_float(info.get("marketCap")),
+    )
+
+
+def fetch_macro_indicators() -> list[MacroIndicator]:
+    series_codes = {
+        "US_CPI": "CPIAUCSL",
+        "US_UNEMPLOYMENT": "UNRATE",
+        "US_10Y_TREASURY": "DGS10",
+    }
+    indicators: list[MacroIndicator] = []
+    for series_name, fred_code in series_codes.items():
+        values = _fetch_fred_series(fred_code)
+        if len(values) < 2:
+            continue
+        latest, previous = values[-1], values[-2]
+        indicators.append(
+            MacroIndicator(
+                series=series_name,
+                latest_value=latest,
+                previous_value=previous,
+                delta=latest - previous,
+            )
+        )
+    return indicators
+
+
+def fetch_market_news(limit: int = 5) -> list[dict[str, str]]:
+    feeds = [
+        "https://www.marketwatch.com/rss/topstories",
+        "https://www.nasdaq.com/feed/rssoutbound?category=Markets",
+    ]
+    headlines: list[dict[str, str]] = []
+    for feed in feeds:
+        try:
+            request = Request(feed, headers={"User-Agent": "Mozilla/5.0"})
+            with urlopen(request, timeout=8) as response:
+                payload = response.read().decode("utf-8")
+        except (HTTPError, URLError, TimeoutError):
+            continue
+
+        try:
+            root = ET.fromstring(payload)
+        except ET.ParseError:
+            continue
+
+        for item in root.findall(".//item"):
+            title = item.findtext("title")
+            link = item.findtext("link")
+            if title and link:
+                headlines.append({"title": title.strip(), "link": link.strip()})
+            if len(headlines) >= max(limit, 1):
+                return headlines
+    return headlines[: max(limit, 1)]
+
+
+def average_macro_delta(indicators: list[MacroIndicator]) -> float:
+    if not indicators:
+        return 0.0
+    return float(mean(abs(item.delta) for item in indicators))
+
+
+def _fetch_fred_series(series_code: str) -> list[float]:
+    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_code}"
+    request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        with urlopen(request, timeout=8) as response:
+            lines = response.read().decode("utf-8").splitlines()
+    except (HTTPError, URLError, TimeoutError) as exc:
+        raise RuntimeError(f"Unable to fetch macro series '{series_code}'.") from exc
+
+    values: list[float] = []
+    for raw_line in lines[1:]:
+        try:
+            _, raw_value = raw_line.split(",", maxsplit=1)
+        except ValueError:
+            continue
+        cleaned = raw_value.strip()
+        if cleaned == ".":
+            continue
+        try:
+            values.append(float(cleaned))
+        except ValueError:
+            continue
+    return values
+
+
+def _safe_float(value):
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
