@@ -13,7 +13,39 @@ from trading_bot.bot.data_sources import (
     fetch_x_sentiment_scores,
     get_market_snapshot,
 )
+from trading_bot.bot.llm import LLMDecider
 from trading_bot.bot.service import generate_suggestion
+
+
+def _build_summary_decider() -> LLMDecider:
+    provider = os.getenv("LLM_PROVIDER", "openai")
+    if provider == "openai":
+        model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        api_key = os.getenv("OPENAI_API_KEY")
+    else:
+        model = os.getenv("HUGGINGFACE_MODEL", "meta-llama/Meta-Llama-3-8B-Instruct")
+        api_key = os.getenv("HUGGINGFACE_API_KEY")
+    return LLMDecider(provider=provider, model=model, api_key=api_key)
+
+
+def _summarize_result_with_llm(payload: dict[str, Any]) -> str:
+    try:
+        decider = _build_summary_decider()
+        summary = decider.summarize_json(payload)
+        if summary:
+            return summary
+    except Exception:
+        pass
+    decision = payload.get("decision", {})
+    action = str(decision.get("action", "HOLD"))
+    confidence = decision.get("confidence", "n/a")
+    risk_notes = str(decision.get("risk_notes", "No risk notes available."))
+    symbol = str(payload.get("symbol", "N/A"))
+    return (
+        f"- Symbol: {symbol}\n"
+        f"- Action: {action} (confidence: {confidence})\n"
+        f"- Risk notes: {risk_notes}"
+    )
 
 
 @dataclass
@@ -111,6 +143,7 @@ class ResearchSessionStore:
                     f"Confidence {confidence:.2f} below threshold {threshold:.2f}."
                 )
 
+            result["readable_summary"] = _summarize_result_with_llm(result)
             self._append_log(job, "Research complete.")
             with self._lock:
                 job.result = result
