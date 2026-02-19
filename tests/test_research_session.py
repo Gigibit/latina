@@ -52,6 +52,53 @@ def test_research_job_applies_acceptance_threshold(monkeypatch):
     assert any("Research complete" in line for line in job.stream_log)
 
 
+def test_research_job_uses_manual_symbols_when_auto_detection_disabled(monkeypatch):
+    monkeypatch.setenv("AUTO_DETECTION_SYMBOL_NUMBER", "false")
+
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.fetch_trending_symbols",
+        lambda limit: ["AUTO"],
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.get_market_snapshot",
+        lambda symbol: SimpleNamespace(
+            symbol=symbol,
+            latest_volume=100.0,
+            avg_volume_20d=100.0,
+            pct_change_5d=2.0 if symbol == "AAPL" else 1.0,
+        ),
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.fetch_x_sentiment_scores",
+        lambda symbol, days: {day: 0.1 for day in days},
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.generate_suggestion",
+        lambda symbol, user_risk_profile: {
+            "symbol": symbol,
+            "decision": {
+                "action": "BUY",
+                "confidence": 85,
+                "risk_notes": "ok",
+            },
+        },
+    )
+
+    store = ResearchSessionStore()
+    job = ResearchJob(
+        session_id="s2",
+        risk_profile="medium",
+        candidate_symbols=["AAPL", "MSFT"],
+    )
+
+    store._run_job(job)
+
+    assert job.status == "completed"
+    assert job.result is not None
+    assert job.result["symbol"] == "AAPL"
+    assert any("Auto symbol detection disabled" in line for line in job.stream_log)
+
+
 def test_trading_suggestion_view_async_returns_session_status(monkeypatch):
     fake_job = SimpleNamespace(
         status="running",
@@ -62,7 +109,7 @@ def test_trading_suggestion_view_async_returns_session_status(monkeypatch):
 
     monkeypatch.setattr(
         "trading_bot.bot.views.research_sessions.get_or_create",
-        lambda session_id, risk_profile: fake_job,
+        lambda session_id, risk_profile, candidate_symbols: fake_job,
     )
 
     request = RequestFactory().get(
@@ -73,3 +120,16 @@ def test_trading_suggestion_view_async_returns_session_status(monkeypatch):
     assert response.status_code == 200
     assert b'"session_id": "test-session"' in response.content
     assert b'"status": "running"' in response.content
+
+
+def test_discover_symbol_requires_manual_symbols_when_auto_detection_disabled(monkeypatch):
+    monkeypatch.setenv("AUTO_DETECTION_SYMBOL_NUMBER", "0")
+
+    store = ResearchSessionStore()
+    job = ResearchJob(session_id="s3", risk_profile="low")
+
+    try:
+        store._discover_symbol(job)
+        raise AssertionError("Expected ValueError when symbols are missing")
+    except ValueError as exc:
+        assert "Provide symbols separated by commas" in str(exc)

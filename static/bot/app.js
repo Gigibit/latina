@@ -2,6 +2,8 @@ const sections = [...document.querySelectorAll('.section')];
 const navItems = [...document.querySelectorAll('.nav-item')];
 const suggestionForm = document.getElementById('suggestion-form');
 const suggestionOutput = document.getElementById('suggestion-output');
+const appShell = document.querySelector('.app-shell');
+const manualSymbolInputEnabled = appShell?.dataset.manualSymbolInputEnabled === 'true';
 
 function showSection(target) {
   sections.forEach((section) => {
@@ -28,8 +30,11 @@ async function callApi(url, outputId) {
   }
 }
 
-async function startSuggestionResearch(riskValue) {
+async function startSuggestionResearch(riskValue, symbolsValue = '') {
   const params = new URLSearchParams({ risk: riskValue, async: 'true' });
+  if (symbolsValue.trim()) {
+    params.set('symbols', symbolsValue);
+  }
   let payload;
 
   try {
@@ -74,9 +79,16 @@ async function startSuggestionResearch(riskValue) {
 suggestionForm.addEventListener('submit', (event) => {
   event.preventDefault();
   const formData = new FormData(event.target);
-  const risk = formData.get('risk') || 'medium';
+  const risk = String(formData.get('risk') || 'medium');
+  const symbols = String(formData.get('symbols') || '').trim();
+
+  if (manualSymbolInputEnabled && !symbols) {
+    suggestionOutput.textContent = 'Please provide at least one symbol (comma separated).';
+    return;
+  }
+
   suggestionOutput.textContent = 'Research started. Stream log will update automatically...';
-  startSuggestionResearch(String(risk));
+  startSuggestionResearch(risk, symbols);
 });
 
 document.getElementById('candidates-form').addEventListener('submit', (event) => {

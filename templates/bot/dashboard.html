@@ -7,7 +7,11 @@
   <link rel="stylesheet" href="/static/bot/app.css" />
 </head>
 <body>
-  <main class="app-shell">
+  <main
+    class="app-shell"
+    data-auto-detection-symbol-number="{{ auto_detection_symbol_number }}"
+    data-manual-symbol-input-enabled="{{ manual_symbol_input_enabled|yesno:'true,false' }}"
+  >
     <header class="top-bar">
       <h1>AI Trading Bot</h1>
       <p>Mobile-first control center</p>
@@ -16,7 +20,18 @@
     <section id="section-suggestion" class="section is-active" data-section="suggestion">
       <h2>Suggestion</h2>
       <form id="suggestion-form" class="card form-grid">
-        <p class="card">Symbol is selected automatically by the research system.</p>
+        {% if manual_symbol_input_enabled %}
+        <label>Symbols
+          <input
+            name="symbols"
+            type="text"
+            placeholder="AAPL, MSFT, NVDA"
+          />
+        </label>
+        <p class="card">AUTO_DETECTION_SYMBOL_NUMBER is disabled. Provide one or more symbols separated by commas.</p>
+        {% else %}
+        <p class="card">Symbol discovery is automatic (AUTO_DETECTION_SYMBOL_NUMBER={{ auto_detection_symbol_number }}).</p>
+        {% endif %}
         <label>Risk
           <select name="risk">
             <option value="low">Low</option>
