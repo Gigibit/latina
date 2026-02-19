@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Trading Bot Dashboard</title>
+  <link rel="stylesheet" href="/static/bot/app.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <header class="top-bar">
+      <h1>AI Trading Bot</h1>
+      <p>Mobile-first control center</p>
+    </header>
+
+    <section id="section-suggestion" class="section is-active" data-section="suggestion">
+      <h2>Suggestion</h2>
+      <form id="suggestion-form" class="card form-grid">
+        <label>Symbol
+          <input name="symbol" value="AAPL" required />
+        </label>
+        <label>Risk
+          <select name="risk">
+            <option value="low">Low</option>
+            <option value="medium" selected>Medium</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+        <button type="submit">Get suggestion</button>
+      </form>
+      <pre id="suggestion-output" class="card output"></pre>
+    </section>
+
+    <section id="section-candidates" class="section" data-section="candidates">
+      <h2>Candidates</h2>
+      <form id="candidates-form" class="card form-grid">
+        <label>Limit
+          <input name="limit" type="number" min="1" max="20" value="5" />
+        </label>
+        <label>Risk
+          <select name="risk">
+            <option value="low">Low</option>
+            <option value="medium" selected>Medium</option>
+            <option value="high">High</option>
+          </select>
+        </label>
+        <button type="submit">Load candidates</button>
+      </form>
+      <pre id="candidates-output" class="card output"></pre>
+    </section>
+
+    <section id="section-monitor" class="section" data-section="monitor">
+      <h2>Market Monitor</h2>
+      <form id="monitor-form" class="card form-grid">
+        <label>Limit
+          <input name="limit" type="number" min="1" max="20" value="5" />
+        </label>
+        <button type="submit">Refresh monitor</button>
+      </form>
+      <pre id="monitor-output" class="card output"></pre>
+    </section>
+  </main>
+
+  <nav class="bottom-nav" aria-label="Main sections">
+    <button class="nav-item is-active" data-target="suggestion">Suggestion</button>
+    <button class="nav-item" data-target="candidates">Candidates</button>
+    <button class="nav-item" data-target="monitor">Monitor</button>
+  </nav>
+
+  <script src="/static/bot/app.js"></script>
+</body>
+</html>
