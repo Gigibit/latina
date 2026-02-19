@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date
@@ -49,12 +51,27 @@ class MacroIndicator:
 def fetch_trending_symbols(region: str = "US", limit: int = 10) -> list[str]:
     api_url = f"https://query1.finance.yahoo.com/v1/finance/trending/{region.upper()}"
     request = Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
+    retry_enabled = _is_env_flag_enabled("RETRY_BACKOFFF_ENABLED", default=True)
+    max_attempts = 3 if retry_enabled else 1
 
-    try:
-        with urlopen(request, timeout=8) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (HTTPError, URLError, TimeoutError) as exc:
-        raise RuntimeError("Unable to fetch trending symbols from Yahoo Finance.") from exc
+    payload: dict[str, object] | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with urlopen(request, timeout=8) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            break
+        except HTTPError as exc:
+            is_rate_limited = exc.code == 429
+            should_retry = retry_enabled and is_rate_limited and attempt < max_attempts
+            if should_retry:
+                _sleep_with_exponential_backoff(attempt)
+                continue
+            raise RuntimeError("Unable to fetch trending symbols from Yahoo Finance.") from exc
+        except (URLError, TimeoutError) as exc:
+            raise RuntimeError("Unable to fetch trending symbols from Yahoo Finance.") from exc
+
+    if payload is None:
+        raise RuntimeError("Unable to fetch trending symbols from Yahoo Finance.")
 
     quotes = payload.get("finance", {}).get("result", [{}])[0].get("quotes", [])
     symbols: list[str] = []
@@ -67,6 +84,18 @@ def fetch_trending_symbols(region: str = "US", limit: int = 10) -> list[str]:
         raise RuntimeError("Yahoo Finance returned no trending symbols.")
 
     return symbols[: max(limit, 1)]
+
+
+def _is_env_flag_enabled(name: str, default: bool = True) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _sleep_with_exponential_backoff(attempt: int) -> None:
+    delay_seconds = min(2 ** (attempt - 1), 8)
+    time.sleep(delay_seconds)
 
 
 def get_market_snapshot(symbol: str, lookback_days: int = 90) -> MarketSnapshot:
