@@ -6,6 +6,7 @@ Simple Django API that provides **BUY / SELL / HOLD** suggestions using:
 - Fundamental metrics (P/E, EPS, debt/equity, market cap)
 - Local embeddings retrieval (`sentence-transformers`)
 - Decision LLM provider selectable via `.env` (`openai` or `huggingface`)
+- Optional eToro order automation for BUY/SELL/HOLD with per-action toggles and cooldown window
 
 ## Setup
 
@@ -61,6 +62,10 @@ Example response (`/api/suggestion/`):
     "confidence": 62,
     "reasoning": "...",
     "risk_notes": "..."
+  },
+  "etoro_execution": {
+    "status": "skipped",
+    "reason": "HOLD action enabled: no order sent"
   }
 }
 ```
@@ -69,3 +74,16 @@ Example response (`/api/suggestion/`):
 
 - This is for educational use only, not financial advice.
 - If dependencies are missing, the service returns clear install guidance errors.
+
+
+## eToro automation
+
+Set these `.env` variables to enable order execution:
+
+- `ETORO_AUTOTRADE_ENABLED=true` to allow automation
+- `ETORO_ENABLE_BUY_ACTION`, `ETORO_ENABLE_SELL_ACTION`, `ETORO_ENABLE_HOLD_ACTION` to enable/disable each action
+- `ETORO_NEXT_SUGGESTION_WAIT_SECONDS` to wait before sending the same `symbol + action` again
+- `ETORO_API_BASE_URL`, `ETORO_API_KEY`, `ETORO_ACCOUNT_ID` for API integration
+- `ETORO_AUTOTRADE_STATE_FILE` to store cooldown state
+
+When action is `HOLD`, the API call is skipped and cooldown still gets updated if HOLD is enabled.
