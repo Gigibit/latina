@@ -96,3 +96,4 @@ When action is `HOLD`, the API call is skipped and cooldown still gets updated i
 - `stream_log` is preserved and updated while research is running so humans can follow progress.
 - The engine auto-selects symbols from scraped market trends + sentiment analysis; the UI no longer accepts manual symbol input.
 - `SYMBOL_ACTION_ACCEPTANCE_THRESHOLD` enforces a minimum confidence. If confidence is below threshold, action is forced to `HOLD`.
+- `RETRY_BACKOFFF_ENABLED` toggles retry + exponential backoff for rate-limited trending-symbol scraping (default: `true`).
