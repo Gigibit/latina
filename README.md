@@ -1,7 +1,9 @@
 # AI Trading Suggestion Bot (Django)
 
 Simple Django API that provides **BUY / SELL / HOLD** suggestions using:
-- Yahoo Finance market data (`yfinance`)
+- Multi-source market data (Yahoo Finance, FRED macro data, market RSS news)
+- Technical analysis (SMA, RSI, MACD, Bollinger Bands)
+- Fundamental metrics (P/E, EPS, debt/equity, market cap)
 - Local embeddings retrieval (`sentence-transformers`)
 - Decision LLM provider selectable via `.env` (`openai` or `huggingface`)
 
@@ -24,11 +26,13 @@ Simple Django API that provides **BUY / SELL / HOLD** suggestions using:
 python manage.py runserver
 ```
 
-## Endpoint
+## Endpoints
 
-`GET /api/suggestion/?symbol=AAPL&risk=medium`
+- `GET /api/suggestion/?symbol=AAPL&risk=medium`
+- `GET /api/candidates/?limit=5&risk=medium`
+- `GET /api/market-monitor/?limit=5`
 
-Example response:
+Example response (`/api/suggestion/`):
 
 ```json
 {
@@ -36,9 +40,22 @@ Example response:
   "risk_profile": "medium",
   "provider": "openai",
   "model": "gpt-4o-mini",
-  "selected_context": [
-    {"text": "...", "score": 0.79}
-  ],
+  "buy_probability": 0.67,
+  "technical_indicators": {
+    "sma_20": 212.3,
+    "sma_50": 205.1,
+    "rsi_14": 57.2,
+    "macd": 1.51,
+    "macd_signal": 1.08,
+    "bollinger_upper": 219.7,
+    "bollinger_lower": 198.8
+  },
+  "fundamental_metrics": {
+    "pe_ratio": 24.1,
+    "eps": 6.43,
+    "debt_to_equity": 145.2,
+    "market_cap": 3450000000000
+  },
   "decision": {
     "action": "HOLD",
     "confidence": 62,

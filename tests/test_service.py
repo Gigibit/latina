@@ -1,4 +1,6 @@
-from trading_bot.bot.service import generate_suggestion, get_best_candidates
+from types import SimpleNamespace
+
+from trading_bot.bot.service import generate_suggestion, get_best_candidates, get_market_monitor
 
 
 class DummyRetriever:
@@ -52,6 +54,29 @@ def test_generate_suggestion_with_mocks(monkeypatch):
             },
         ),
     )
+    monkeypatch.setattr(
+        "trading_bot.bot.service.compute_technical_indicators",
+        lambda symbol: SimpleNamespace(
+            sma_20=120.0,
+            sma_50=110.0,
+            rsi_14=55.0,
+            macd=1.2,
+            macd_signal=0.8,
+            bollinger_upper=130.0,
+            bollinger_lower=100.0,
+        ),
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.service.fetch_fundamental_metrics",
+        lambda symbol: SimpleNamespace(
+            pe_ratio=20.0,
+            eps=3.5,
+            debt_to_equity=90.0,
+            market_cap=1000000.0,
+        ),
+    )
+    monkeypatch.setattr("trading_bot.bot.service.fetch_macro_indicators", lambda: [])
+    monkeypatch.setattr("trading_bot.bot.service.average_macro_delta", lambda indicators: 0.0)
     monkeypatch.setattr("trading_bot.bot.service.FaissEmbeddingRetriever", DummyRetriever)
     monkeypatch.setattr("trading_bot.bot.service.LLMDecider", DummyDecider)
 
@@ -61,8 +86,9 @@ def test_generate_suggestion_with_mocks(monkeypatch):
     assert result["provider"] == "openai"
     assert result["decision"]["action"] == "BUY"
     assert len(result["selected_context"]) == 4
-    assert result["buy_probability"] == 0.75
+    assert result["buy_probability"] > 0.75
     assert result["x_sentiment"]["weight"] == 0.3
+    assert result["technical_indicators"]["sma_20"] == 120.0
 
 
 def test_get_best_candidates_ranks_by_score(monkeypatch):
@@ -119,3 +145,26 @@ def test_get_best_candidates_ranks_by_score(monkeypatch):
     assert result["risk_profile"] == "medium"
     assert [candidate["symbol"] for candidate in result["candidates"]] == ["BBB", "AAA"]
     assert len(result["candidates"]) == 2
+
+
+def test_get_market_monitor(monkeypatch):
+    monkeypatch.setattr(
+        "trading_bot.bot.service.fetch_market_news",
+        lambda limit: [{"title": "Fed decision", "link": "https://example.com/news"}],
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.service.fetch_macro_indicators",
+        lambda: [
+            SimpleNamespace(
+                series="US_CPI",
+                latest_value=310.0,
+                previous_value=309.2,
+                delta=0.8,
+            )
+        ],
+    )
+
+    result = get_market_monitor(limit=3)
+    assert result["news_count"] == 1
+    assert result["market_regime"] == "risk_off"
+    assert result["alerts"]

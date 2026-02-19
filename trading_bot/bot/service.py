@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import os
+from statistics import mean
 
 from trading_bot.bot.data_sources import (
+    average_macro_delta,
+    compute_technical_indicators,
+    fetch_fundamental_metrics,
+    fetch_macro_indicators,
+    fetch_market_news,
     fetch_trending_symbols,
     fetch_x_sentiment_scores,
     get_candle_history,
@@ -138,6 +144,32 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
     total_count = max(len(selected), 1)
     buy_probability = buy_count / total_count
 
+    technical = compute_technical_indicators(symbol)
+    fundamentals = fetch_fundamental_metrics(symbol)
+    macro_indicators = fetch_macro_indicators()
+    macro_delta = average_macro_delta(macro_indicators)
+
+    indicator_bias = 0.0
+    indicator_bias += 0.06 if technical.sma_20 > technical.sma_50 else -0.06
+    if technical.rsi_14 < 30:
+        indicator_bias += 0.04
+    elif technical.rsi_14 > 70:
+        indicator_bias -= 0.04
+    indicator_bias += 0.03 if technical.macd > technical.macd_signal else -0.03
+
+    fundamental_bias = 0.0
+    if fundamentals.pe_ratio is not None and fundamentals.pe_ratio < 25:
+        fundamental_bias += 0.03
+    if fundamentals.debt_to_equity is not None and fundamentals.debt_to_equity > 180:
+        fundamental_bias -= 0.03
+
+    macro_penalty = min(macro_delta / 100, 0.04)
+
+    adjusted_buy_probability = min(
+        0.98,
+        max(0.02, buy_probability + indicator_bias + fundamental_bias - macro_penalty),
+    )
+
     provider = os.getenv("LLM_PROVIDER", "openai")
     if provider == "openai":
         model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -159,8 +191,17 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
         f"Symbol: {symbol.upper()}\n"
         f"Risk profile: {user_risk_profile}\n"
         f"Candle size: {candle_size}\n"
-        f"Buy probability from similar historical behaviors: {buy_probability * 100:.2f}%\n"
-        f"Sell probability from similar historical behaviors: {(1 - buy_probability) * 100:.2f}%\n"
+        "Buy probability from similar historical behaviors: "
+        f"{adjusted_buy_probability * 100:.2f}%\n"
+        f"Sell probability from similar historical behaviors: "
+        f"{(1 - adjusted_buy_probability) * 100:.2f}%\n"
+        f"Technical indicators: SMA20={technical.sma_20:.2f}, SMA50={technical.sma_50:.2f}, "
+        f"RSI14={technical.rsi_14:.2f}, MACD={technical.macd:.3f}, "
+        f"MACD_SIGNAL={technical.macd_signal:.3f}, BB_upper={technical.bollinger_upper:.2f}, "
+        f"BB_lower={technical.bollinger_lower:.2f}.\n"
+        f"Fundamental metrics: PE={fundamentals.pe_ratio}, EPS={fundamentals.eps}, "
+        f"Debt/Equity={fundamentals.debt_to_equity}, MarketCap={fundamentals.market_cap}.\n"
+        f"Macro delta absolute mean: {macro_delta:.4f}.\n"
         f"Selected market context:\n{context_blob}\n"
         f"Predict whether next {candle_size} should be BUY or SELL, "
         "include probability and concise risk notes."
@@ -175,8 +216,11 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
         "candle_size": candle_size,
         "candles_rag_inference_number": rag_inference_number,
         "x_sentiment": sentiment_metadata,
-        "buy_probability": round(buy_probability, 4),
-        "sell_probability": round(1 - buy_probability, 4),
+        "technical_indicators": technical.__dict__,
+        "fundamental_metrics": fundamentals.__dict__,
+        "macro_indicators": [item.__dict__ for item in macro_indicators],
+        "buy_probability": round(adjusted_buy_probability, 4),
+        "sell_probability": round(1 - adjusted_buy_probability, 4),
         "selected_context": [chunk.__dict__ for chunk in nearest_behaviors],
         "decision": decision,
     }
@@ -214,4 +258,27 @@ def get_best_candidates(limit: int = 5, user_risk_profile: str = "medium") -> di
         "risk_profile": user_risk_profile,
         "source": "Yahoo Finance trending",
         "candidates": top_candidates,
+    }
+
+
+def get_market_monitor(limit: int = 5) -> dict:
+    news = fetch_market_news(limit=limit)
+    macro = fetch_macro_indicators()
+    macro_volatility = average_macro_delta(macro)
+    alerts: list[str] = []
+
+    if macro_volatility > 0.5:
+        alerts.append("Elevata volatilità macroeconomica rilevata.")
+    if any(abs(item.delta) > 0.25 for item in macro):
+        alerts.append("Sono presenti variazioni macro significative nelle ultime rilevazioni.")
+    if not alerts:
+        alerts.append("Nessun alert macro significativo al momento.")
+
+    return {
+        "alerts": alerts,
+        "macro_indicators": [item.__dict__ for item in macro],
+        "news": news,
+        "news_count": len(news),
+        "market_regime": "risk_off" if macro_volatility > 0.5 else "neutral",
+        "headline_sentiment_proxy": round(mean([0.0 for _ in news]) if news else 0.0, 4),
     }
