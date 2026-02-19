@@ -57,6 +57,48 @@ def test_research_job_applies_acceptance_threshold(monkeypatch):
     assert any("Research complete" in line for line in job.stream_log)
 
 
+def test_research_job_skips_readable_summary_when_disabled(monkeypatch):
+    monkeypatch.setenv("OUTPUTS_READABILITY_ENABLED", "false")
+
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.fetch_trending_symbols",
+        lambda limit: ["AAA"],
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.get_market_snapshot",
+        lambda symbol: SimpleNamespace(
+            symbol=symbol,
+            latest_volume=200.0,
+            avg_volume_20d=100.0,
+            pct_change_5d=2.0,
+        ),
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.fetch_x_sentiment_scores",
+        lambda symbol, days: {day: 0.2 for day in days},
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.generate_suggestion",
+        lambda symbol, user_risk_profile: {
+            "symbol": symbol,
+            "decision": {
+                "action": "BUY",
+                "confidence": 80,
+                "risk_notes": "original",
+            },
+        },
+    )
+
+    store = ResearchSessionStore()
+    job = ResearchJob(session_id="s-disable-summary", risk_profile="medium")
+
+    store._run_job(job)
+
+    assert job.status == "completed"
+    assert job.result is not None
+    assert "readable_summary" not in job.result
+
+
 def test_research_job_uses_manual_symbols_when_auto_detection_disabled(monkeypatch):
     monkeypatch.setenv("AUTO_DETECTION_SYMBOL_NUMBER", "false")
 
