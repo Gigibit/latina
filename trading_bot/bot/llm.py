@@ -8,7 +8,33 @@ SYSTEM_PROMPT = """You are a trading assistant. Output JSON only with keys:
 - confidence: integer 0-100
 - reasoning: short string
 - risk_notes: short string
-Do not provide financial guarantees."""
+Rules:
+- Keep reasoning concise and grounded in provided evidence.
+- Prefer HOLD when evidence is mixed or confidence is below 55.
+- Do not provide financial guarantees."""
+
+
+def _normalize_decision(payload: dict[str, Any]) -> dict[str, Any]:
+    action = str(payload.get("action", "HOLD")).upper().strip()
+    if action not in {"BUY", "SELL", "HOLD"}:
+        action = "HOLD"
+
+    raw_confidence = payload.get("confidence", 50)
+    try:
+        confidence = int(round(float(raw_confidence)))
+    except (TypeError, ValueError):
+        confidence = 50
+    confidence = max(0, min(100, confidence))
+
+    reasoning = str(payload.get("reasoning", "Insufficient model reasoning provided.")).strip()
+    risk_notes = str(payload.get("risk_notes", "No explicit risk notes provided.")).strip()
+
+    return {
+        "action": action,
+        "confidence": confidence,
+        "reasoning": reasoning,
+        "risk_notes": risk_notes,
+    }
 
 
 class LLMDecider:
@@ -43,7 +69,7 @@ class LLMDecider:
                 ],
             )
             content = resp.choices[0].message.content or "{}"
-            return json.loads(content)
+            return _normalize_decision(json.loads(content))
 
         if self.provider == "huggingface":
             try:
@@ -62,6 +88,6 @@ class LLMDecider:
                 ],
             )
             content = resp.choices[0].message.content or "{}"
-            return json.loads(content)
+            return _normalize_decision(json.loads(content))
 
         raise ValueError("Unsupported LLM provider. Use 'openai' or 'huggingface'.")
