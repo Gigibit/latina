@@ -40,16 +40,8 @@ def fetch_trending_symbols(region: str = "US", limit: int = 10) -> list[str]:
 
 
 def get_market_snapshot(symbol: str, lookback_days: int = 90) -> MarketSnapshot:
-    try:
-        import yfinance as yf
-    except ImportError as exc:
-        raise RuntimeError(
-            "yfinance is not installed. Install dependencies from requirements.txt"
-        ) from exc
-
-    ticker = yf.Ticker(symbol)
-    history = ticker.history(period=f"{lookback_days}d", interval="1d").dropna()
-    if history.empty or len(history) < 21:
+    history = get_candle_history(symbol=symbol, candle_size="1d", lookback_candles=lookback_days)
+    if len(history) < 21:
         raise ValueError(f"Not enough data found for symbol '{symbol}'.")
 
     closes = history["Close"]
@@ -70,3 +62,36 @@ def get_market_snapshot(symbol: str, lookback_days: int = 90) -> MarketSnapshot:
         avg_volume_20d=avg_volume_20d,
         latest_volume=latest_volume,
     )
+
+
+def resolve_candle_size(candle_size: str) -> tuple[str, int]:
+    normalized = candle_size.strip()
+    mapping = {
+        "24h": ("1h", 24),
+        "1d": ("1d", 1),
+        "7d": ("1d", 7),
+        "1M": ("1d", 30),
+    }
+    if normalized not in mapping:
+        raise ValueError("CANDLE_SIZE must be one of: 24h, 1d, 7d, 1M")
+    return mapping[normalized]
+
+
+def get_candle_history(symbol: str, candle_size: str = "1d", lookback_candles: int = 180):
+    try:
+        import yfinance as yf
+    except ImportError as exc:
+        raise RuntimeError(
+            "yfinance is not installed. Install dependencies from requirements.txt"
+        ) from exc
+
+    interval, candle_span = resolve_candle_size(candle_size)
+    history_length = max(lookback_candles * candle_span, 60)
+
+    ticker = yf.Ticker(symbol)
+    history = ticker.history(period=f"{history_length}d", interval=interval).dropna()
+
+    if history.empty:
+        raise ValueError(f"Not enough data found for symbol '{symbol}'.")
+
+    return history
