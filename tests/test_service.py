@@ -44,6 +44,12 @@ def test_generate_suggestion_with_mocks(monkeypatch):
                 {"text": "context 4", "action": "BUY", "next_pct_change": 0.5},
             ],
             "query",
+            {
+                "enabled": True,
+                "weight": 0.3,
+                "avg_query_sentiment": 0.2,
+                "weighted_avg_query_sentiment": 0.06,
+            },
         ),
     )
     monkeypatch.setattr("trading_bot.bot.service.FaissEmbeddingRetriever", DummyRetriever)
@@ -56,6 +62,7 @@ def test_generate_suggestion_with_mocks(monkeypatch):
     assert result["decision"]["action"] == "BUY"
     assert len(result["selected_context"]) == 4
     assert result["buy_probability"] == 0.75
+    assert result["x_sentiment"]["weight"] == 0.3
 
 
 def test_get_best_candidates_ranks_by_score(monkeypatch):
