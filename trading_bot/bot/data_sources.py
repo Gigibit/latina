@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import date
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -95,3 +96,25 @@ def get_candle_history(symbol: str, candle_size: str = "1d", lookback_candles: i
         raise ValueError(f"Not enough data found for symbol '{symbol}'.")
 
     return history
+
+
+def fetch_x_sentiment_scores(symbol: str, days: list[date]) -> dict[date, float]:
+    """Return sentiment scores for each day in range [-1, 1].
+
+    This is a lightweight placeholder implementation that can be replaced
+    with a real X/Twitter sentiment provider integration.
+    """
+
+    unique_days = sorted(set(days))
+    if not unique_days:
+        return {}
+
+    symbol_seed = sum(ord(ch) for ch in symbol.upper())
+    scores: dict[date, float] = {}
+
+    for day in unique_days:
+        day_seed = day.toordinal() + symbol_seed
+        normalized = ((day_seed % 200) - 100) / 100
+        scores[day] = round(normalized, 4)
+
+    return scores

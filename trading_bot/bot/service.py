@@ -4,6 +4,7 @@ import os
 
 from trading_bot.bot.data_sources import (
     fetch_trending_symbols,
+    fetch_x_sentiment_scores,
     get_candle_history,
     get_market_snapshot,
     resolve_candle_size,
@@ -24,6 +25,14 @@ def _build_behavior_samples(symbol: str, candle_size: str, rag_inference_number:
 
     closes = history["Close"].astype(float).tolist()
     volumes = history["Volume"].astype(float).tolist()
+    candle_dates = [index.date() for index in history.index]
+
+    sentiment_enabled = _is_env_flag_enabled("TWITTER_SENTIMENT_ANALYSYS_ENABLED", True)
+    sentiment_weight = float(os.getenv("TWITTER_SENTIMENT_ANALYSYS_WEIGHT", "0.15"))
+    sentiment_by_day = (
+        fetch_x_sentiment_scores(symbol=symbol, days=candle_dates) if sentiment_enabled else {}
+    )
+    sentiment_scores = [float(sentiment_by_day.get(day, 0.0)) for day in candle_dates]
 
     min_required = rag_inference_number + (window_size * 2) + 2
     if len(closes) < min_required:
@@ -50,6 +59,8 @@ def _build_behavior_samples(symbol: str, candle_size: str, rag_inference_number:
         mean_price = sum(price_slice) / window_size
         volatility = max(price_slice) - min(price_slice)
         mean_volume = sum(volume_slice) / window_size
+        mean_sentiment = sum(sentiment_scores[idx : idx + window_size]) / window_size
+        weighted_sentiment = mean_sentiment * sentiment_weight
 
         samples.append(
             {
@@ -57,10 +68,14 @@ def _build_behavior_samples(symbol: str, candle_size: str, rag_inference_number:
                     f"{symbol.upper()} behavior window ending at candle {idx + window_size}: "
                     f"mean_price={mean_price:.2f}, volatility={volatility:.2f}, "
                     f"mean_volume={mean_volume:.2f}, "
+                    f"x_sentiment={mean_sentiment:.3f}, "
+                    f"weighted_x_sentiment={weighted_sentiment:.3f}, "
                     f"next_{candle_size}_move={pct_change:.2f}% ({action})."
                 ),
                 "action": action,
                 "next_pct_change": pct_change,
+                "x_sentiment": round(mean_sentiment, 4),
+                "weighted_x_sentiment": round(weighted_sentiment, 4),
             }
         )
 
@@ -70,14 +85,33 @@ def _build_behavior_samples(symbol: str, candle_size: str, rag_inference_number:
     query_trend = ((query_closes[-1] / query_closes[0]) - 1) * 100
     query_volatility = max(query_closes) - min(query_closes)
     query_avg_volume = sum(query_volumes) / max(len(query_volumes), 1)
+    query_sentiment_scores = sentiment_scores[-query_length:]
+    query_avg_sentiment = sum(query_sentiment_scores) / max(len(query_sentiment_scores), 1)
+    query_weighted_sentiment = query_avg_sentiment * sentiment_weight
 
     query = (
         f"{symbol.upper()} current sequence over {query_length} candles: "
         f"trend={query_trend:.2f}%, volatility={query_volatility:.2f}, "
-        f"avg_volume={query_avg_volume:.2f}. Find similar behavior."
+        f"avg_volume={query_avg_volume:.2f}, "
+        f"x_sentiment={query_avg_sentiment:.3f}, "
+        f"weighted_x_sentiment={query_weighted_sentiment:.3f}. Find similar behavior."
     )
 
-    return samples, query
+    sentiment_metadata = {
+        "enabled": sentiment_enabled,
+        "weight": sentiment_weight,
+        "avg_query_sentiment": round(query_avg_sentiment, 4),
+        "weighted_avg_query_sentiment": round(query_weighted_sentiment, 4),
+    }
+
+    return samples, query, sentiment_metadata
+
+
+def _is_env_flag_enabled(name: str, default: bool = True) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
@@ -89,7 +123,9 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
     if rag_inference_number <= 1:
         raise ValueError("CANDLES_RAG_INFERENCE_NUMER must be greater than 1")
 
-    samples, query = _build_behavior_samples(symbol, candle_size, rag_inference_number)
+    samples, query, sentiment_metadata = _build_behavior_samples(
+        symbol, candle_size, rag_inference_number
+    )
     corpus = [sample["text"] for sample in samples]
 
     embedding_model = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
@@ -138,6 +174,7 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
         "model": model,
         "candle_size": candle_size,
         "candles_rag_inference_number": rag_inference_number,
+        "x_sentiment": sentiment_metadata,
         "buy_probability": round(buy_probability, 4),
         "sell_probability": round(1 - buy_probability, 4),
         "selected_context": [chunk.__dict__ for chunk in nearest_behaviors],
