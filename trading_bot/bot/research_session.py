@@ -28,6 +28,13 @@ def _build_summary_decider() -> LLMDecider:
     return LLMDecider(provider=provider, model=model, api_key=api_key)
 
 
+def _is_env_flag_enabled(name: str, default: bool = True) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _summarize_result_with_llm(payload: dict[str, Any]) -> str:
     try:
         decider = _build_summary_decider()
@@ -143,7 +150,8 @@ class ResearchSessionStore:
                     f"Confidence {confidence:.2f} below threshold {threshold:.2f}."
                 )
 
-            result["readable_summary"] = _summarize_result_with_llm(result)
+            if _is_env_flag_enabled("OUTPUTS_READABILITY_ENABLED", True):
+                result["readable_summary"] = _summarize_result_with_llm(result)
             self._append_log(job, "Research complete.")
             with self._lock:
                 job.result = result
