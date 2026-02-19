@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+
+logger = logging.getLogger(__name__)
 
 
 def _is_env_flag_enabled(name: str, default: bool = False) -> bool:
@@ -120,10 +123,16 @@ def execute_etoro_action(symbol: str, action: str, confidence: int | float | Non
         method="POST",
     )
 
+    logger.debug("eToro request body: %s", payload)
+
     try:
         with urlopen(request, timeout=15) as response:
             response_body = response.read().decode("utf-8")
+        logger.debug("eToro response body: %s", response_body)
     except HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
+        if error_body:
+            logger.debug("eToro error response body: %s", error_body)
         return {"status": "error", "reason": f"eToro API HTTP error {exc.code}"}
     except URLError as exc:
         return {"status": "error", "reason": f"eToro API connection error: {exc.reason}"}
