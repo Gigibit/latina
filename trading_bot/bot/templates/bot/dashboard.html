@@ -1,0 +1,73 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Trading Bot Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'bot/dashboard.css' %}">
+</head>
+<body>
+  <div class="bg-glow"></div>
+  <main class="container">
+    <header class="hero card">
+      <p class="badge">AI Trading Assistant</p>
+      <h1>Modern Market Intelligence</h1>
+      <p class="subtitle">Analizza simboli, monitora il mercato e ricevi suggerimenti operativi in un'unica dashboard.</p>
+    </header>
+
+    <section class="grid">
+      <article class="card">
+        <div class="card-head">
+          <h2>Suggerimento</h2>
+          <span class="dot"></span>
+        </div>
+        <form id="suggestion-form" class="stack">
+          <div class="row">
+            <label for="symbol">Ticker</label>
+            <input id="symbol" name="symbol" value="AAPL" required>
+          </div>
+          <div class="row">
+            <label for="risk">Rischio</label>
+            <select id="risk" name="risk">
+              <option value="low">Low</option>
+              <option value="medium" selected>Medium</option>
+              <option value="high">High</option>
+            </select>
+          </div>
+          <button type="submit">Genera suggerimento</button>
+        </form>
+        <pre id="suggestion-output" class="output"></pre>
+      </article>
+
+      <article class="card">
+        <div class="card-head"><h2>Top Candidates</h2></div>
+        <form id="candidates-form" class="stack inline-form">
+          <input type="number" id="limit" name="limit" min="1" max="15" value="5">
+          <select id="risk-candidates" name="risk">
+            <option value="low">Low</option>
+            <option value="medium" selected>Medium</option>
+            <option value="high">High</option>
+          </select>
+          <button type="submit">Aggiorna</button>
+        </form>
+        <pre id="candidates-output" class="output"></pre>
+      </article>
+
+      <article class="card card-wide">
+        <div class="card-head"><h2>Market Monitor</h2></div>
+        <form id="monitor-form" class="stack inline-form">
+          <input type="number" id="news-limit" name="limit" min="1" max="10" value="5">
+          <button type="submit">Aggiorna feed</button>
+        </form>
+        <pre id="monitor-output" class="output"></pre>
+      </article>
+    </section>
+  </main>
+
+  <script src="{% static 'bot/dashboard.js' %}"></script>
+</body>
+</html>

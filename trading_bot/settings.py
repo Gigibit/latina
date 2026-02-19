@@ -22,7 +22,14 @@ MIDDLEWARE = [
 ]
 
 ROOT_URLCONF = "trading_bot.urls"
-TEMPLATES = []
+TEMPLATES = [
+    {
+        "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [BASE_DIR / "templates"],
+        "APP_DIRS": True,
+        "OPTIONS": {"context_processors": []},
+    }
+]
 WSGI_APPLICATION = "trading_bot.wsgi.application"
 
 DATABASES = {
