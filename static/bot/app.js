@@ -1,5 +1,7 @@
 const sections = [...document.querySelectorAll('.section')];
 const navItems = [...document.querySelectorAll('.nav-item')];
+const suggestionForm = document.getElementById('suggestion-form');
+const suggestionOutput = document.getElementById('suggestion-output');
 
 function showSection(target) {
   sections.forEach((section) => {
@@ -26,10 +28,55 @@ async function callApi(url, outputId) {
   }
 }
 
-document.getElementById('suggestion-form').addEventListener('submit', (event) => {
+async function startSuggestionResearch(riskValue) {
+  const params = new URLSearchParams({ risk: riskValue, async: 'true' });
+  let payload;
+
+  try {
+    const response = await fetch(`/api/suggestion/?${params.toString()}`);
+    payload = await response.json();
+  } catch (error) {
+    suggestionOutput.textContent = `Error: ${error.message}`;
+    return;
+  }
+
+  if (!payload.session_id) {
+    suggestionOutput.textContent = JSON.stringify(payload, null, 2);
+    return;
+  }
+
+  let isDone = false;
+  while (!isDone) {
+    try {
+      const statusParams = new URLSearchParams({
+        async: 'true',
+        status: 'true',
+        session_id: payload.session_id,
+      });
+      const response = await fetch(`/api/suggestion/?${statusParams.toString()}`);
+      const statusPayload = await response.json();
+
+      suggestionOutput.textContent = JSON.stringify(statusPayload, null, 2);
+      isDone = ['completed', 'failed'].includes(statusPayload.status);
+    } catch (error) {
+      suggestionOutput.textContent = `Error: ${error.message}`;
+      isDone = true;
+    }
+
+    if (!isDone) {
+      await new Promise((resolve) => {
+        window.setTimeout(resolve, 1200);
+      });
+    }
+  }
+}
+
+suggestionForm.addEventListener('submit', (event) => {
   event.preventDefault();
-  const params = new URLSearchParams(new FormData(event.target));
-  callApi(`/api/suggestion/?${params.toString()}`, 'suggestion-output');
+  const formData = new FormData(event.target);
+  const risk = formData.get('risk') || 'medium';
+  suggestionOutput.textContent = 'Research started. Stream log will update automatically...';
+  startSuggestionResearch(String(risk));
 });
 
 document.getElementById('candidates-form').addEventListener('submit', (event) => {
@@ -44,4 +91,4 @@ document.getElementById('monitor-form').addEventListener('submit', (event) => {
   callApi(`/api/market-monitor/?${params.toString()}`, 'monitor-output');
 });
 
-callApi('/api/suggestion/?symbol=AAPL&risk=medium', 'suggestion-output');
+startSuggestionResearch('medium');
