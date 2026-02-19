@@ -20,6 +20,7 @@ from trading_bot.bot.service import generate_suggestion
 class ResearchJob:
     session_id: str
     risk_profile: str
+    candidate_symbols: list[str] | None = None
     status: str = "running"
     stream_log: list[str] = field(default_factory=list)
     result: dict[str, Any] | None = None
@@ -32,13 +33,22 @@ class ResearchSessionStore:
         self._jobs: dict[str, ResearchJob] = {}
         self._lock = threading.Lock()
 
-    def get_or_create(self, session_id: str, risk_profile: str) -> ResearchJob:
+    def get_or_create(
+        self,
+        session_id: str,
+        risk_profile: str,
+        candidate_symbols: list[str] | None = None,
+    ) -> ResearchJob:
         with self._lock:
             existing = self._jobs.get(session_id)
             if existing and existing.status == "running":
                 return existing
 
-            job = ResearchJob(session_id=session_id, risk_profile=risk_profile)
+            job = ResearchJob(
+                session_id=session_id,
+                risk_profile=risk_profile,
+                candidate_symbols=candidate_symbols,
+            )
             self._jobs[session_id] = job
             thread = threading.Thread(
                 target=self._run_job,
@@ -57,6 +67,13 @@ class ResearchSessionStore:
         timestamp = time.strftime("%H:%M:%S")
         with self._lock:
             job.stream_log.append(f"[{timestamp}] {message}")
+
+    @staticmethod
+    def _auto_detection_symbol_number() -> int:
+        raw_value = os.getenv("AUTO_DETECTION_SYMBOL_NUMBER", "7").strip()
+        if raw_value.lower() in {"false", "off", "no"}:
+            return 0
+        return max(int(raw_value), 0)
 
     def _run_job(self, job: ResearchJob) -> None:
         try:
@@ -106,7 +123,25 @@ class ResearchSessionStore:
 
     def _discover_symbol(self, job: ResearchJob) -> tuple[str, float, list[dict[str, float | str]]]:
         self._append_log(job, "Scraping trending symbols and sentiment signals from web data.")
-        symbols = fetch_trending_symbols(limit=10)
+        auto_detection_symbol_number = self._auto_detection_symbol_number()
+        if auto_detection_symbol_number > 0:
+            symbols = fetch_trending_symbols(limit=auto_detection_symbol_number)
+            self._append_log(
+                job,
+                (
+                    "AUTO_DETECTION_SYMBOL_NUMBER="
+                    f"{auto_detection_symbol_number}; using auto-selected symbols."
+                ),
+            )
+        else:
+            symbols = job.candidate_symbols or []
+            if not symbols:
+                raise ValueError(
+                    ("AUTO_DETECTION_SYMBOL_NUMBER disables auto mode. "
+                    "Provide symbols separated by commas.")
+                )
+            self._append_log(job, "Auto symbol detection disabled; using symbols from user input.")
+
         today = date.today()
         last_days = [today - timedelta(days=offset) for offset in range(5)]
 
