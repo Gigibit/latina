@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
@@ -15,6 +16,8 @@ from trading_bot.bot.data_sources import (
 )
 from trading_bot.bot.llm import LLMDecider
 from trading_bot.bot.service import generate_suggestion
+
+logger = logging.getLogger(__name__)
 
 
 def _build_summary_decider() -> LLMDecider:
@@ -117,7 +120,21 @@ class ResearchSessionStore:
     def _run_job(self, job: ResearchJob) -> None:
         try:
             self._append_log(job, "Research session started.")
+            logger.info(
+                "Research workload started session_id=%s risk_profile=%s candidate_symbols=%s",
+                job.session_id,
+                job.risk_profile,
+                job.candidate_symbols,
+            )
             symbol, score, ranking = self._discover_symbol(job)
+            logger.info(
+                "Research workload symbol discovered session_id=%s symbol=%s "
+                "score=%.4f ranking_size=%s",
+                job.session_id,
+                symbol,
+                score,
+                len(ranking),
+            )
             self._append_log(
                 job,
                 (
@@ -126,7 +143,18 @@ class ResearchSessionStore:
                 ),
             )
 
+            logger.info(
+                "Research workload generating suggestion session_id=%s symbol=%s",
+                job.session_id,
+                symbol,
+            )
             result = generate_suggestion(symbol=symbol, user_risk_profile=job.risk_profile)
+            logger.info(
+                "Research workload suggestion generated session_id=%s symbol=%s decision=%s",
+                job.session_id,
+                symbol,
+                result.get("decision", {}).get("action"),
+            )
             threshold = float(os.getenv("SYMBOL_ACTION_ACCEPTANCE_THRESHOLD", "0"))
             confidence = float(result.get("decision", {}).get("confidence", 0) or 0)
             accepted = confidence >= threshold
@@ -153,6 +181,12 @@ class ResearchSessionStore:
             if _is_env_flag_enabled("OUTPUTS_READABILITY_ENABLED", True):
                 result["readable_summary"] = _summarize_result_with_llm(result)
             self._append_log(job, "Research complete.")
+            logger.info(
+                "Research workload completed session_id=%s selected_symbol=%s accepted=%s",
+                job.session_id,
+                symbol,
+                accepted,
+            )
             with self._lock:
                 job.result = result
                 job.status = "completed"
@@ -160,13 +194,20 @@ class ResearchSessionStore:
             with self._lock:
                 job.error = str(exc)
                 job.status = "failed"
+            logger.exception("Research workload failed session_id=%s error=%s", job.session_id, exc)
             self._append_log(job, f"Research failed: {exc}")
 
     def _discover_symbol(self, job: ResearchJob) -> tuple[str, float, list[dict[str, float | str]]]:
         self._append_log(job, "Scraping trending symbols and sentiment signals from web data.")
+        logger.info("Research workload discovery started session_id=%s", job.session_id)
         auto_detection_symbol_number = self._auto_detection_symbol_number()
         if auto_detection_symbol_number > 0:
             symbols = fetch_trending_symbols(limit=auto_detection_symbol_number)
+            logger.info(
+                "Research workload auto-detection symbols fetched session_id=%s count=%s",
+                job.session_id,
+                len(symbols),
+            )
             self._append_log(
                 job,
                 (
@@ -176,10 +217,17 @@ class ResearchSessionStore:
             )
         else:
             symbols = job.candidate_symbols or []
+            logger.info(
+                "Research workload manual symbols session_id=%s count=%s",
+                job.session_id,
+                len(symbols),
+            )
             if not symbols:
                 raise ValueError(
-                    ("AUTO_DETECTION_SYMBOL_NUMBER disables auto mode. "
-                    "Provide symbols separated by commas.")
+                    (
+                        "AUTO_DETECTION_SYMBOL_NUMBER disables auto mode. "
+                        "Provide symbols separated by commas."
+                    )
                 )
             self._append_log(job, "Auto symbol detection disabled; using symbols from user input.")
 
@@ -215,10 +263,19 @@ class ResearchSessionStore:
             )
 
         if not ranking:
+            logger.warning(
+                "Research workload discovery produced no ranking session_id=%s", job.session_id
+            )
             raise ValueError("No symbols available from scraping phase.")
 
         ranking.sort(key=lambda row: float(row["score"]), reverse=True)
         best = ranking[0]
+        logger.info(
+            "Research workload discovery completed session_id=%s top_symbol=%s top_score=%.4f",
+            job.session_id,
+            best["symbol"],
+            float(best["score"]),
+        )
         return str(best["symbol"]), float(best["score"]), ranking
 
 

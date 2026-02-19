@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 
 from django.http import JsonResponse
@@ -8,6 +9,8 @@ from django.views.decorators.http import require_GET
 
 from trading_bot.bot.research_session import research_sessions
 from trading_bot.bot.service import generate_suggestion, get_best_candidates, get_market_monitor
+
+logger = logging.getLogger(__name__)
 
 
 def _auto_detection_symbol_number() -> int:
@@ -44,6 +47,17 @@ def trading_suggestion_view(request):
     risk_profile = request.GET.get("risk", "medium")
     symbols = [item.strip().upper() for item in (symbols_raw or "").split(",") if item.strip()]
 
+    logger.info(
+        "Request trading_suggestion_view async=%s status_only=%s session_id=%s "
+        "symbol=%s symbols=%s risk=%s",
+        async_mode,
+        status_only,
+        session_id,
+        symbol,
+        symbols,
+        risk_profile,
+    )
+
     try:
         if async_mode:
             if not session_id:
@@ -54,6 +68,11 @@ def trading_suggestion_view(request):
             if status_only:
                 job = research_sessions.get(session_id)
                 if not job:
+                    logger.warning(
+                        "Response trading_suggestion_view status=404 "
+                        "reason=unknown_research_session session_id=%s",
+                        session_id,
+                    )
                     return JsonResponse({"error": "Unknown research session."}, status=404)
             else:
                 job = research_sessions.get_or_create(
@@ -62,15 +81,23 @@ def trading_suggestion_view(request):
                     candidate_symbols=symbols,
                 )
 
-            return JsonResponse(
-                {
-                    "session_id": session_id,
-                    "status": job.status,
-                    "stream_log": job.stream_log,
-                    "result": job.result,
-                    "error": job.error,
-                }
+            payload = {
+                "session_id": session_id,
+                "status": job.status,
+                "stream_log": job.stream_log,
+                "result": job.result,
+                "error": job.error,
+            }
+            logger.info(
+                "Response trading_suggestion_view status=200 async=true session_id=%s "
+                "job_status=%s stream_entries=%s has_result=%s has_error=%s",
+                session_id,
+                job.status,
+                len(job.stream_log),
+                bool(job.result),
+                bool(job.error),
             )
+            return JsonResponse(payload)
 
         if symbols:
             payload = {
@@ -82,8 +109,14 @@ def trading_suggestion_view(request):
             }
         else:
             payload = generate_suggestion(symbol=symbol, user_risk_profile=risk_profile)
+        logger.info(
+            "Response trading_suggestion_view status=200 async=false mode=%s risk=%s",
+            "multi-symbol" if symbols else "single-symbol",
+            risk_profile,
+        )
         return JsonResponse(payload)
     except Exception as exc:
+        logger.exception("Response trading_suggestion_view status=400 error=%s", exc)
         return JsonResponse({"error": str(exc)}, status=400)
 
 
@@ -92,18 +125,36 @@ def best_candidates_view(request):
     limit = int(request.GET.get("limit", "5"))
     risk_profile = request.GET.get("risk", "medium")
 
+    logger.info(
+        "Request best_candidates_view limit=%s risk=%s",
+        limit,
+        risk_profile,
+    )
+
     try:
         payload = get_best_candidates(limit=limit, user_risk_profile=risk_profile)
+        logger.info(
+            "Response best_candidates_view status=200 candidates=%s",
+            len(payload.get("candidates", [])),
+        )
         return JsonResponse(payload)
     except Exception as exc:
+        logger.exception("Response best_candidates_view status=400 error=%s", exc)
         return JsonResponse({"error": str(exc)}, status=400)
 
 
 @require_GET
 def market_monitor_view(request):
     limit = int(request.GET.get("limit", "5"))
+    logger.info("Request market_monitor_view limit=%s", limit)
     try:
         payload = get_market_monitor(limit=limit)
+        logger.info(
+            "Response market_monitor_view status=200 alerts=%s news_count=%s",
+            len(payload.get("alerts", [])),
+            payload.get("news_count", 0),
+        )
         return JsonResponse(payload)
     except Exception as exc:
+        logger.exception("Response market_monitor_view status=400 error=%s", exc)
         return JsonResponse({"error": str(exc)}, status=400)
