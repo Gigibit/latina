@@ -18,13 +18,37 @@ navItems.forEach((item) => {
   item.addEventListener('click', () => showSection(item.dataset.target));
 });
 
+function renderPayload(output, data) {
+  const readableSummary = data?.result?.readable_summary || data?.readable_summary;
+  if (!readableSummary) {
+    output.textContent = JSON.stringify(data, null, 2);
+    return;
+  }
+
+  output.innerHTML = '';
+  const summaryBlock = document.createElement('div');
+  summaryBlock.textContent = readableSummary;
+
+  const details = document.createElement('details');
+  details.open = false;
+  const summary = document.createElement('summary');
+  summary.textContent = 'Raw JSON';
+  const jsonBlock = document.createElement('pre');
+  jsonBlock.textContent = JSON.stringify(data, null, 2);
+
+  details.appendChild(summary);
+  details.appendChild(jsonBlock);
+  output.appendChild(summaryBlock);
+  output.appendChild(details);
+}
+
 async function callApi(url, outputId) {
   const output = document.getElementById(outputId);
   output.textContent = 'Loading...';
   try {
     const response = await fetch(url);
     const data = await response.json();
-    output.textContent = JSON.stringify(data, null, 2);
+    renderPayload(output, data);
   } catch (error) {
     output.textContent = `Error: ${error.message}`;
   }
@@ -46,7 +70,7 @@ async function startSuggestionResearch(riskValue, symbolsValue = '') {
   }
 
   if (!payload.session_id) {
-    suggestionOutput.textContent = JSON.stringify(payload, null, 2);
+    renderPayload(suggestionOutput, payload);
     return;
   }
 
@@ -61,7 +85,7 @@ async function startSuggestionResearch(riskValue, symbolsValue = '') {
       const response = await fetch(`/api/suggestion/?${statusParams.toString()}`);
       const statusPayload = await response.json();
 
-      suggestionOutput.textContent = JSON.stringify(statusPayload, null, 2);
+      renderPayload(suggestionOutput, statusPayload);
       isDone = ['completed', 'failed'].includes(statusPayload.status);
     } catch (error) {
       suggestionOutput.textContent = `Error: ${error.message}`;

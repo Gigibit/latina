@@ -37,6 +37,10 @@ def test_research_job_applies_acceptance_threshold(monkeypatch):
             },
         },
     )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session._summarize_result_with_llm",
+        lambda payload: "Summary from LLM",
+    )
 
     store = ResearchSessionStore()
     job = ResearchJob(session_id="s1", risk_profile="medium")
@@ -48,6 +52,7 @@ def test_research_job_applies_acceptance_threshold(monkeypatch):
     assert job.result["decision"]["action"] == "HOLD"
     assert job.result["discovery"]["acceptance_threshold"] == 70.0
     assert job.result["discovery"]["accepted"] is False
+    assert job.result["readable_summary"] == "Summary from LLM"
     assert any("Research session started" in line for line in job.stream_log)
     assert any("Research complete" in line for line in job.stream_log)
 
@@ -133,3 +138,20 @@ def test_discover_symbol_requires_manual_symbols_when_auto_detection_disabled(mo
         raise AssertionError("Expected ValueError when symbols are missing")
     except ValueError as exc:
         assert "Provide symbols separated by commas" in str(exc)
+
+
+def test_summarize_result_with_llm_fallback_without_api_key(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+
+    from trading_bot.bot import research_session as module
+
+    payload = {
+        "symbol": "AAPL",
+        "decision": {"action": "HOLD", "confidence": 42, "risk_notes": "Mixed signals."},
+    }
+
+    text = module._summarize_result_with_llm(payload)
+
+    assert "Symbol: AAPL" in text
+    assert "Action: HOLD" in text
