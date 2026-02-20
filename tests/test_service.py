@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from trading_bot.bot.service import generate_suggestion, get_best_candidates, get_market_monitor
 
 
@@ -38,7 +40,7 @@ def test_generate_suggestion_with_mocks(monkeypatch):
 
     monkeypatch.setattr(
         "trading_bot.bot.service._build_behavior_samples",
-        lambda symbol, candle_size, rag_inference_number: (
+        lambda symbol, candle_size, rag_inference_number, rag_granularity_size=None: (
             [
                 {"text": "context 1", "action": "BUY", "next_pct_change": 1.1},
                 {"text": "context 2", "action": "SELL", "next_pct_change": -0.6},
@@ -52,6 +54,7 @@ def test_generate_suggestion_with_mocks(monkeypatch):
                 "avg_query_sentiment": 0.2,
                 "weighted_avg_query_sentiment": 0.06,
             },
+            [100.0, 101.0, 102.0],
         ),
     )
     monkeypatch.setattr(
@@ -173,3 +176,19 @@ def test_get_market_monitor(monkeypatch):
     assert result["news_count"] == 1
     assert result["market_regime"] == "risk_off"
     assert result["alerts"]
+
+def test_generate_suggestion_requires_granularity_for_introspective_mode(monkeypatch):
+    monkeypatch.setenv("CHUNKIZATION_MODE", "INTROSPECTIVE_CANDLE")
+    monkeypatch.delenv("CANDLE_RAG_GRANULARITY_SIZE", raising=False)
+
+    with pytest.raises(ValueError, match="CANDLE_RAG_GRANULARITY_SIZE is mandatory"):
+        generate_suggestion("AAPL", "medium")
+
+
+def test_generate_suggestion_validates_granularity_is_less_than_candle_size(monkeypatch):
+    monkeypatch.setenv("CHUNKIZATION_MODE", "INTROSPECTIVE_CANDLE")
+    monkeypatch.setenv("CANDLE_SIZE", "1d")
+    monkeypatch.setenv("CANDLE_RAG_GRANULARITY_SIZE", "1d")
+
+    with pytest.raises(ValueError, match="must be strictly less than CANDLE_SIZE"):
+        generate_suggestion("AAPL", "medium")
