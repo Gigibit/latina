@@ -1,7 +1,7 @@
 # AI Trading Suggestion Bot (Django)
 
 Simple Django API that provides **BUY / SELL / HOLD** suggestions using:
-- Multi-source market data (Yahoo Finance, FRED macro data, market RSS news)
+- Multi-source market data (Yahoo Finance/Stooq candles, FRED macro data, market RSS news)
 - Technical analysis (SMA, RSI, MACD, Bollinger Bands)
 - Fundamental metrics (P/E, EPS, debt/equity, market cap)
 - Local embeddings retrieval (`sentence-transformers`)
@@ -97,3 +97,4 @@ When action is `HOLD`, the API call is skipped and cooldown still gets updated i
 - The engine auto-selects symbols from scraped market trends + sentiment analysis; the UI no longer accepts manual symbol input.
 - `SYMBOL_ACTION_ACCEPTANCE_THRESHOLD` enforces a minimum confidence. If confidence is below threshold, action is forced to `HOLD`.
 - `RETRY_BACKOFFF_ENABLED` toggles retry + exponential backoff for rate-limited trending-symbol scraping (default: `true`).
+- `MARKETS_DATA_PROVIDER` selects candle provider: `yfinance` (default) or `stooq`.
