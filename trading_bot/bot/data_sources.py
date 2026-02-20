@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 import xml.etree.ElementTree as ET
@@ -11,6 +12,8 @@ from statistics import mean
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote_plus
 from urllib.request import Request, urlopen
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -58,18 +61,42 @@ def fetch_trending_symbols(region: str = "US", limit: int = 10) -> list[str]:
 
     payload: dict[str, object] | None = None
     for attempt in range(1, max_attempts + 1):
+        logger.info(
+            "External request service=yahoo_finance endpoint=trending_symbols url=%s attempt=%s/%s",
+            api_url,
+            attempt,
+            max_attempts,
+        )
         try:
             with urlopen(request, timeout=8) as response:
-                payload = json.loads(response.read().decode("utf-8"))
+                raw_payload = response.read().decode("utf-8")
+                payload = json.loads(raw_payload)
+                logger.info(
+                    "External response service=yahoo_finance endpoint=trending_symbols "
+                    "status=%s bytes=%s",
+                    getattr(response, "status", "n/a"),
+                    len(raw_payload),
+                )
             break
         except HTTPError as exc:
             is_rate_limited = exc.code == 429
             should_retry = retry_enabled and is_rate_limited and attempt < max_attempts
+            logger.warning(
+                "External response service=yahoo_finance endpoint=trending_symbols "
+                "status=%s rate_limited=%s retry=%s",
+                exc.code,
+                is_rate_limited,
+                should_retry,
+            )
             if should_retry:
                 _sleep_with_exponential_backoff(attempt)
                 continue
             raise RuntimeError("Unable to fetch trending symbols from Yahoo Finance.") from exc
         except (URLError, TimeoutError) as exc:
+            logger.warning(
+                "External response service=yahoo_finance endpoint=trending_symbols error=%s",
+                exc,
+            )
             raise RuntimeError("Unable to fetch trending symbols from Yahoo Finance.") from exc
 
     if payload is None:
@@ -172,8 +199,27 @@ def _get_yfinance_candle_history(
     interval, candle_span = resolve_candle_size(candle_size)
     history_length = max(int(lookback_candles * candle_span) + 5, 60)
 
+    logger.info(
+        "External request service=yfinance endpoint=history symbol=%s period_days=%s interval=%s",
+        symbol.upper(),
+        history_length,
+        interval,
+    )
     ticker = yf.Ticker(symbol)
-    history = ticker.history(period=f"{history_length}d", interval=interval).dropna()
+    try:
+        history = ticker.history(period=f"{history_length}d", interval=interval).dropna()
+    except Exception:
+        logger.exception(
+            "External response service=yfinance endpoint=history symbol=%s failed",
+            symbol.upper(),
+        )
+        raise
+
+    logger.info(
+        "External response service=yfinance endpoint=history symbol=%s rows=%s",
+        symbol.upper(),
+        len(history),
+    )
 
     if history.empty:
         raise ValueError(f"Not enough data found for symbol '{symbol}'.")
@@ -195,12 +241,28 @@ def _get_stooq_candle_history(symbol: str, candle_size: str = "1d", lookback_can
         f"s={quote_plus(stooq_symbol)}&i=d"
     )
     request = Request(csv_url, headers={"User-Agent": "Mozilla/5.0"})
+    logger.info(
+        "External request service=stooq endpoint=history symbol=%s url=%s",
+        stooq_symbol,
+        csv_url,
+    )
 
     try:
         with urlopen(request, timeout=8) as response:
             csv_payload = response.read().decode("utf-8")
     except (HTTPError, URLError, TimeoutError) as exc:
+        logger.warning(
+            "External response service=stooq endpoint=history symbol=%s error=%s",
+            stooq_symbol,
+            exc,
+        )
         raise RuntimeError("Unable to fetch candles from Stooq.") from exc
+
+    logger.info(
+        "External response service=stooq endpoint=history symbol=%s bytes=%s",
+        stooq_symbol,
+        len(csv_payload),
+    )
 
     frame = pd.read_csv(StringIO(csv_payload)).dropna()
     if frame.empty:
@@ -295,8 +357,21 @@ def fetch_fundamental_metrics(symbol: str) -> FundamentalMetrics:
             "yfinance is not installed. Install dependencies from requirements.txt"
         ) from exc
 
+    logger.info("External request service=yfinance endpoint=fundamentals symbol=%s", symbol.upper())
     ticker = yf.Ticker(symbol)
-    info = ticker.info or {}
+    try:
+        info = ticker.info or {}
+    except Exception:
+        logger.exception(
+            "External response service=yfinance endpoint=fundamentals symbol=%s failed",
+            symbol.upper(),
+        )
+        raise
+    logger.info(
+        "External response service=yfinance endpoint=fundamentals symbol=%s keys=%s",
+        symbol.upper(),
+        sorted(info.keys())[:12],
+    )
     return FundamentalMetrics(
         pe_ratio=_safe_float(info.get("forwardPE") or info.get("trailingPE")),
         eps=_safe_float(info.get("trailingEps") or info.get("epsCurrentYear")),
@@ -337,9 +412,20 @@ def fetch_market_news(limit: int = 5) -> list[dict[str, str]]:
     for feed in feeds:
         try:
             request = Request(feed, headers={"User-Agent": "Mozilla/5.0"})
+            logger.info("External request service=rss endpoint=market_news url=%s", feed)
             with urlopen(request, timeout=8) as response:
                 payload = response.read().decode("utf-8")
-        except (HTTPError, URLError, TimeoutError):
+            logger.info(
+                "External response service=rss endpoint=market_news url=%s bytes=%s",
+                feed,
+                len(payload),
+            )
+        except (HTTPError, URLError, TimeoutError) as exc:
+            logger.warning(
+                "External response service=rss endpoint=market_news url=%s error=%s",
+                feed,
+                exc,
+            )
             continue
 
         try:
@@ -366,10 +452,16 @@ def average_macro_delta(indicators: list[MacroIndicator]) -> float:
 def _fetch_fred_series(series_code: str) -> list[float]:
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_code}"
     request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    logger.info("External request service=fred endpoint=series code=%s url=%s", series_code, url)
     try:
         with urlopen(request, timeout=8) as response:
             lines = response.read().decode("utf-8").splitlines()
     except (HTTPError, URLError, TimeoutError) as exc:
+        logger.warning(
+            "External response service=fred endpoint=series code=%s error=%s",
+            series_code,
+            exc,
+        )
         raise RuntimeError(f"Unable to fetch macro series '{series_code}'.") from exc
 
     values: list[float] = []
@@ -385,6 +477,11 @@ def _fetch_fred_series(series_code: str) -> list[float]:
             values.append(float(cleaned))
         except ValueError:
             continue
+    logger.info(
+        "External response service=fred endpoint=series code=%s points=%s",
+        series_code,
+        len(values),
+    )
     return values
 
 
