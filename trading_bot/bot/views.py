@@ -32,11 +32,6 @@ def dashboard_view(request):
         },
     )
 
-
-@require_GET
-def dashboard_view(request):
-    return render(request, "bot/dashboard.html")
-
 @require_GET
 def trading_suggestion_view(request):
     async_mode = request.GET.get("async", "true").lower() in {"1", "true", "yes", "on"}
