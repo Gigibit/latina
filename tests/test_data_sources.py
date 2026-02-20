@@ -100,3 +100,21 @@ def test_get_candle_history_rejects_unknown_provider(monkeypatch):
 
     with pytest.raises(ValueError, match="MARKETS_DATA_PROVIDER must be one of"):
         data_sources.get_candle_history(symbol="AAPL")
+
+
+def test_fetch_fundamental_metrics_skips_for_stooq(monkeypatch):
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "stooq")
+
+    metrics = data_sources.fetch_fundamental_metrics("AAPL")
+
+    assert metrics.pe_ratio is None
+    assert metrics.eps is None
+    assert metrics.debt_to_equity is None
+    assert metrics.market_cap is None
+
+
+def test_fetch_fundamental_metrics_rejects_unknown_provider(monkeypatch):
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "unknown")
+
+    with pytest.raises(ValueError, match="MARKETS_DATA_PROVIDER must be one of"):
+        data_sources.fetch_fundamental_metrics("AAPL")
