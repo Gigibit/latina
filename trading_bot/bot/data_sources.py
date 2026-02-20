@@ -123,16 +123,17 @@ def get_market_snapshot(symbol: str, lookback_days: int = 90) -> MarketSnapshot:
     )
 
 
-def resolve_candle_size(candle_size: str) -> tuple[str, int]:
+def resolve_candle_size(candle_size: str) -> tuple[str, float]:
     normalized = candle_size.strip()
     mapping = {
+        "1h": ("1h", 1 / 24),
         "24h": ("1h", 24),
         "1d": ("1d", 1),
         "7d": ("1d", 7),
         "1M": ("1d", 30),
     }
     if normalized not in mapping:
-        raise ValueError("CANDLE_SIZE must be one of: 24h, 1d, 7d, 1M")
+        raise ValueError("CANDLE_SIZE must be one of: 1h, 24h, 1d, 7d, 1M")
     return mapping[normalized]
 
 
@@ -145,7 +146,7 @@ def get_candle_history(symbol: str, candle_size: str = "1d", lookback_candles: i
         ) from exc
 
     interval, candle_span = resolve_candle_size(candle_size)
-    history_length = max(lookback_candles * candle_span, 60)
+    history_length = max(int(lookback_candles * candle_span) + 5, 60)
 
     ticker = yf.Ticker(symbol)
     history = ticker.history(period=f"{history_length}d", interval=interval).dropna()

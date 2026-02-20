@@ -19,14 +19,63 @@ from trading_bot.bot.etoro import execute_etoro_action
 from trading_bot.bot.llm import LLMDecider
 from trading_bot.bot.retrieval import FaissEmbeddingRetriever
 
+DEFAULT_CHUNKIZATION_MODE = "DEFAULT"
+INTROSPECTIVE_CANDLE_CHUNKIZATION_MODE = "INTROSPECTIVE_CANDLE"
 
-def _build_behavior_samples(symbol: str, candle_size: str, rag_inference_number: int):
-    _, window_size = resolve_candle_size(candle_size)
+
+def _resolve_chunkization_mode() -> str:
+    mode = os.getenv("CHUNKIZATION_MODE", DEFAULT_CHUNKIZATION_MODE).strip().upper()
+    allowed_modes = {DEFAULT_CHUNKIZATION_MODE, INTROSPECTIVE_CANDLE_CHUNKIZATION_MODE}
+    if mode not in allowed_modes:
+        raise ValueError(
+            "CHUNKIZATION_MODE must be one of: "
+            f"{DEFAULT_CHUNKIZATION_MODE}, {INTROSPECTIVE_CANDLE_CHUNKIZATION_MODE}"
+        )
+    return mode
+
+
+def _resolve_rag_granularity_size(candle_size: str) -> tuple[str | None, int | None]:
+    chunkization_mode = _resolve_chunkization_mode()
+    if chunkization_mode != INTROSPECTIVE_CANDLE_CHUNKIZATION_MODE:
+        return None, None
+
+    granularity_size = os.getenv("CANDLE_RAG_GRANULARITY_SIZE")
+    if not granularity_size:
+        raise ValueError(
+            "CANDLE_RAG_GRANULARITY_SIZE is mandatory when "
+            "CHUNKIZATION_MODE=INTROSPECTIVE_CANDLE"
+        )
+
+    _, candle_days = resolve_candle_size(candle_size)
+    _, granularity_days = resolve_candle_size(granularity_size)
+
+    if granularity_days >= candle_days:
+        raise ValueError("CANDLE_RAG_GRANULARITY_SIZE must be strictly less than CANDLE_SIZE")
+
+    elements_per_candle = candle_days / granularity_days
+    if int(elements_per_candle) != elements_per_candle:
+        raise ValueError(
+            "CANDLE_RAG_GRANULARITY_SIZE must divide CANDLE_SIZE exactly "
+            "for INTROSPECTIVE_CANDLE mode"
+        )
+
+    return granularity_size, int(elements_per_candle)
+
+
+def _build_behavior_samples(
+    symbol: str,
+    candle_size: str,
+    rag_inference_number: int,
+    rag_granularity_size: str | None = None,
+):
+    effective_candle_size = rag_granularity_size or candle_size
+    _, window_size = resolve_candle_size(effective_candle_size)
+    window_size = max(int(window_size), 1)
 
     lookback_candles = max(rag_inference_number + window_size + 60, 120)
     history = get_candle_history(
         symbol=symbol,
-        candle_size=candle_size,
+        candle_size=effective_candle_size,
         lookback_candles=lookback_candles,
     )
 
@@ -77,12 +126,13 @@ def _build_behavior_samples(symbol: str, candle_size: str, rag_inference_number:
                     f"mean_volume={mean_volume:.2f}, "
                     f"x_sentiment={mean_sentiment:.3f}, "
                     f"weighted_x_sentiment={weighted_sentiment:.3f}, "
-                    f"next_{candle_size}_move={pct_change:.2f}% ({action})."
+                    f"next_{effective_candle_size}_move={pct_change:.2f}% ({action})."
                 ),
                 "action": action,
                 "next_pct_change": pct_change,
                 "x_sentiment": round(mean_sentiment, 4),
                 "weighted_x_sentiment": round(weighted_sentiment, 4),
+                "window_prices": price_slice,
             }
         )
 
@@ -111,7 +161,47 @@ def _build_behavior_samples(symbol: str, candle_size: str, rag_inference_number:
         "weighted_avg_query_sentiment": round(query_weighted_sentiment, 4),
     }
 
-    return samples, query, sentiment_metadata
+    return samples, query, sentiment_metadata, query_closes
+
+
+def _select_nearest_behaviors(
+    retriever: FaissEmbeddingRetriever,
+    query: str,
+    samples: list[dict],
+    query_prices: list[float],
+    chunkization_mode: str,
+    candle_chunk_elements: int | None,
+) -> list:
+    corpus = [sample["text"] for sample in samples]
+    if chunkization_mode == DEFAULT_CHUNKIZATION_MODE:
+        return retriever.top_k(query=query, corpus=corpus, k=min(7, len(corpus)))
+
+    if not candle_chunk_elements:
+        raise ValueError("candle_chunk_elements is required for INTROSPECTIVE_CANDLE mode")
+
+    nearest_chunks = retriever.top_k(query=query, corpus=corpus, k=min(20, len(corpus)))
+
+    query_inner = query_prices[-candle_chunk_elements:]
+    if len(query_inner) < candle_chunk_elements:
+        return nearest_chunks[: min(7, len(nearest_chunks))]
+
+    ranked_by_inner_time: list[tuple[float, object]] = []
+    for chunk in nearest_chunks:
+        if chunk.index is None:
+            continue
+        sample_prices = samples[chunk.index].get("window_prices", [])
+        sample_inner = sample_prices[-candle_chunk_elements:]
+        if len(sample_inner) < candle_chunk_elements:
+            continue
+
+        distance = sum((a - b) ** 2 for a, b in zip(query_inner, sample_inner, strict=False))
+        inner_similarity = 1 / (1 + distance)
+        combined_score = (max(float(chunk.score), 0.0) * 0.35) + (inner_similarity * 0.65)
+        chunk.score = combined_score
+        ranked_by_inner_time.append((combined_score, chunk))
+
+    ranked_by_inner_time.sort(key=lambda item: item[0], reverse=True)
+    return [chunk for _, chunk in ranked_by_inner_time[:7]]
 
 
 def _is_env_flag_enabled(name: str, default: bool = True) -> bool:
@@ -145,6 +235,9 @@ def _weighted_behavior_probability(nearest_behaviors, samples: list[dict]) -> tu
 
 def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
     candle_size = os.getenv("CANDLE_SIZE", "1d")
+    chunkization_mode = _resolve_chunkization_mode()
+    rag_granularity_size, candle_chunk_elements = _resolve_rag_granularity_size(candle_size)
+
     raw_rag_inference_number = os.getenv(
         "CANDLES_RAG_INFERENCE_NUMER", os.getenv("CANDLES_RAG_INFERENCE_NUMBER", "64")
     )
@@ -152,15 +245,24 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
     if rag_inference_number <= 1:
         raise ValueError("CANDLES_RAG_INFERENCE_NUMER must be greater than 1")
 
-    samples, query, sentiment_metadata = _build_behavior_samples(
-        symbol, candle_size, rag_inference_number
+    samples, query, sentiment_metadata, query_prices = _build_behavior_samples(
+        symbol,
+        candle_size,
+        rag_inference_number,
+        rag_granularity_size=rag_granularity_size,
     )
-    corpus = [sample["text"] for sample in samples]
 
     embedding_model = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
     retriever = FaissEmbeddingRetriever(embedding_model)
 
-    nearest_behaviors = retriever.top_k(query=query, corpus=corpus, k=min(7, len(corpus)))
+    nearest_behaviors = _select_nearest_behaviors(
+        retriever,
+        query,
+        samples,
+        query_prices,
+        chunkization_mode,
+        candle_chunk_elements,
+    )
 
     buy_probability, retrieval_uncertainty = _weighted_behavior_probability(
         nearest_behaviors, samples
@@ -254,6 +356,9 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
         "provider": provider,
         "model": model,
         "candle_size": candle_size,
+        "chunkization_mode": chunkization_mode,
+        "candle_rag_granularity_size": rag_granularity_size,
+        "candle_rag_granularity_elements": candle_chunk_elements,
         "candles_rag_inference_number": rag_inference_number,
         "x_sentiment": sentiment_metadata,
         "technical_indicators": technical.__dict__,
