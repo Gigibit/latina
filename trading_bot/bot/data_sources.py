@@ -350,6 +350,24 @@ def compute_technical_indicators(symbol: str, lookback_days: int = 180) -> Techn
 
 
 def fetch_fundamental_metrics(symbol: str) -> FundamentalMetrics:
+    provider = os.getenv("MARKETS_DATA_PROVIDER", "yfinance").strip().lower()
+
+    if provider == "stooq":
+        logger.info(
+            "Skipping fundamentals lookup because service=stooq "
+            "does not provide fundamentals symbol=%s",
+            symbol.upper(),
+        )
+        return FundamentalMetrics(
+            pe_ratio=None,
+            eps=None,
+            debt_to_equity=None,
+            market_cap=None,
+        )
+
+    if provider != "yfinance":
+        raise ValueError("MARKETS_DATA_PROVIDER must be one of: yfinance, stooq")
+
     try:
         import yfinance as yf
     except ImportError as exc:
