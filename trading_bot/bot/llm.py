@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 SYSTEM_PROMPT = """You are a trading assistant. Output JSON only with keys:
@@ -20,6 +21,14 @@ Use plain text with short bullet points.
 Do not include markdown code blocks.
 Do not repeat the full JSON.
 """
+
+logger = logging.getLogger(__name__)
+
+
+def _truncate_for_log(value: str, max_chars: int = 700) -> str:
+    if len(value) <= max_chars:
+        return value
+    return f"{value[:max_chars]}...<truncated {len(value) - max_chars} chars>"
 
 
 def _normalize_decision(payload: dict[str, Any]) -> dict[str, Any]:
@@ -67,16 +76,33 @@ class LLMDecider:
                     "openai is not installed. Install dependencies from requirements.txt"
                 ) from exc
             client = OpenAI(api_key=self.api_key)
-            resp = client.chat.completions.create(
-                model=self.model,
-                temperature=0.2,
-                response_format={"type": "json_object"},
-                messages=[
+            request_payload = {
+                "model": self.model,
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"},
+                "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
+            }
+            logger.info(
+                ("External request service=openai endpoint=chat.completions "
+                "provider=%s host=%s payload=%s"),
+                self.provider,
+                str(getattr(client, "base_url", "https://api.openai.com")).rstrip("/"),
+                _truncate_for_log(json.dumps(request_payload, ensure_ascii=False)),
+            )
+            resp = client.chat.completions.create(
+                **request_payload,
             )
             content = resp.choices[0].message.content or "{}"
+            logger.info(
+                ("External response service=openai endpoint=chat.completions "
+                "provider=%s model=%s output_chars=%s"),
+                self.provider,
+                self.model,
+                len(content),
+            )
             return _normalize_decision(json.loads(content))
 
         if self.provider == "huggingface":
@@ -87,15 +113,32 @@ class LLMDecider:
                     "huggingface_hub is not installed. Install dependencies from requirements.txt"
                 ) from exc
             client = InferenceClient(api_key=self.api_key)
-            resp = client.chat.completions.create(
-                model=self.model,
-                temperature=0.2,
-                messages=[
+            request_payload = {
+                "model": self.model,
+                "temperature": 0.2,
+                "messages": [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": prompt},
                 ],
+            }
+            logger.info(
+                ("External request service=huggingface endpoint=chat.completions "
+                "provider=%s host=%s payload=%s"),
+                self.provider,
+                "https://api-inference.huggingface.co",
+                _truncate_for_log(json.dumps(request_payload, ensure_ascii=False)),
+            )
+            resp = client.chat.completions.create(
+                **request_payload,
             )
             content = resp.choices[0].message.content or "{}"
+            logger.info(
+                ("External response service=huggingface endpoint=chat.completions "
+                "provider=%s model=%s output_chars=%s"),
+                self.provider,
+                self.model,
+                len(content),
+            )
             return _normalize_decision(json.loads(content))
 
         raise ValueError("Unsupported LLM provider. Use 'openai' or 'huggingface'.")
@@ -117,15 +160,33 @@ class LLMDecider:
                     "openai is not installed. Install dependencies from requirements.txt"
                 ) from exc
             client = OpenAI(api_key=self.api_key)
-            resp = client.chat.completions.create(
-                model=self.model,
-                temperature=0.2,
-                messages=[
+            request_payload = {
+                "model": self.model,
+                "temperature": 0.2,
+                "messages": [
                     {"role": "system", "content": READABLE_SUMMARY_SYSTEM_PROMPT},
                     {"role": "user", "content": summary_prompt},
                 ],
+            }
+            logger.info(
+                ("External request service=openai endpoint=chat.completions "
+                "provider=%s host=%s payload=%s"),
+                self.provider,
+                str(getattr(client, "base_url", "https://api.openai.com")).rstrip("/"),
+                _truncate_for_log(json.dumps(request_payload, ensure_ascii=False)),
             )
-            return (resp.choices[0].message.content or "").strip()
+            resp = client.chat.completions.create(
+                **request_payload,
+            )
+            content = (resp.choices[0].message.content or "").strip()
+            logger.info(
+                ("External response service=openai endpoint=chat.completions "
+                "provider=%s model=%s output_chars=%s"),
+                self.provider,
+                self.model,
+                len(content),
+            )
+            return content
 
         if self.provider == "huggingface":
             try:
@@ -135,14 +196,32 @@ class LLMDecider:
                     "huggingface_hub is not installed. Install dependencies from requirements.txt"
                 ) from exc
             client = InferenceClient(api_key=self.api_key)
-            resp = client.chat.completions.create(
-                model=self.model,
-                temperature=0.2,
-                messages=[
+            request_payload = {
+                "model": self.model,
+                "temperature": 0.2,
+                "messages": [
                     {"role": "system", "content": READABLE_SUMMARY_SYSTEM_PROMPT},
                     {"role": "user", "content": summary_prompt},
                 ],
+            }
+            logger.info(
+                ("External request service=huggingface endpoint=chat.completions "
+                "provider=%s host=%s payload=%s"),
+                self.provider,
+                "https://api-inference.huggingface.co",
+                _truncate_for_log(json.dumps(request_payload, ensure_ascii=False)),
             )
-            return (resp.choices[0].message.content or "").strip()
+            resp = client.chat.completions.create(
+                **request_payload,
+            )
+            content = (resp.choices[0].message.content or "").strip()
+            logger.info(
+                ("External response service=huggingface endpoint=chat.completions "
+                "provider=%s model=%s output_chars=%s"),
+                self.provider,
+                self.model,
+                len(content),
+            )
+            return content
 
         raise ValueError("Unsupported LLM provider. Use 'openai' or 'huggingface'.")
