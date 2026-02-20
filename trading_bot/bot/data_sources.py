@@ -6,8 +6,10 @@ import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date
+from io import StringIO
 from statistics import mean
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote_plus
 from urllib.request import Request, urlopen
 
 
@@ -138,6 +140,28 @@ def resolve_candle_size(candle_size: str) -> tuple[str, float]:
 
 
 def get_candle_history(symbol: str, candle_size: str = "1d", lookback_candles: int = 180):
+    provider = os.getenv("MARKETS_DATA_PROVIDER", "yfinance").strip().lower()
+
+    if provider == "yfinance":
+        return _get_yfinance_candle_history(
+            symbol=symbol,
+            candle_size=candle_size,
+            lookback_candles=lookback_candles,
+        )
+
+    if provider == "stooq":
+        return _get_stooq_candle_history(
+            symbol=symbol,
+            candle_size=candle_size,
+            lookback_candles=lookback_candles,
+        )
+
+    raise ValueError("MARKETS_DATA_PROVIDER must be one of: yfinance, stooq")
+
+
+def _get_yfinance_candle_history(
+    symbol: str, candle_size: str = "1d", lookback_candles: int = 180
+):
     try:
         import yfinance as yf
     except ImportError as exc:
@@ -155,6 +179,49 @@ def get_candle_history(symbol: str, candle_size: str = "1d", lookback_candles: i
         raise ValueError(f"Not enough data found for symbol '{symbol}'.")
 
     return history
+
+
+def _get_stooq_candle_history(symbol: str, candle_size: str = "1d", lookback_candles: int = 180):
+    import pandas as pd
+
+    interval, candle_span = resolve_candle_size(candle_size)
+    if interval != "1d":
+        raise ValueError("Stooq only supports daily candles for now (1d, 7d, 1M).")
+
+    history_length = max(lookback_candles * candle_span, 60)
+    stooq_symbol = _normalize_stooq_symbol(symbol)
+    csv_url = (
+        "https://stooq.com/q/d/l/?"
+        f"s={quote_plus(stooq_symbol)}&i=d"
+    )
+    request = Request(csv_url, headers={"User-Agent": "Mozilla/5.0"})
+
+    try:
+        with urlopen(request, timeout=8) as response:
+            csv_payload = response.read().decode("utf-8")
+    except (HTTPError, URLError, TimeoutError) as exc:
+        raise RuntimeError("Unable to fetch candles from Stooq.") from exc
+
+    frame = pd.read_csv(StringIO(csv_payload)).dropna()
+    if frame.empty:
+        raise ValueError(f"Not enough data found for symbol '{symbol}'.")
+
+    if "Date" in frame.columns:
+        frame["Date"] = pd.to_datetime(frame["Date"], errors="coerce")
+        frame = frame.dropna(subset=["Date"]).set_index("Date")
+
+    frame = frame.sort_index().tail(history_length)
+    if frame.empty:
+        raise ValueError(f"Not enough data found for symbol '{symbol}'.")
+
+    return frame
+
+
+def _normalize_stooq_symbol(symbol: str) -> str:
+    cleaned = symbol.strip().lower()
+    if "." in cleaned:
+        return cleaned
+    return f"{cleaned}.us"
 
 
 def fetch_x_sentiment_scores(symbol: str, days: list[date]) -> dict[date, float]:
