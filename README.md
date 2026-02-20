@@ -97,4 +97,5 @@ When action is `HOLD`, the API call is skipped and cooldown still gets updated i
 - The engine auto-selects symbols from scraped market trends + sentiment analysis; the UI no longer accepts manual symbol input.
 - `SYMBOL_ACTION_ACCEPTANCE_THRESHOLD` enforces a minimum confidence. If confidence is below threshold, action is forced to `HOLD`.
 - `RETRY_BACKOFFF_ENABLED` toggles retry + exponential backoff for rate-limited trending-symbol scraping (default: `true`).
+- `TRENDING_CANDIDATES_SEARCH_NUMBER` controls Yahoo Finance trending query size via `?count=` (default: `10`).
 - `MARKETS_DATA_PROVIDER` selects candle provider: `yfinance` (default) or `stooq`.

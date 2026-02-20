@@ -37,6 +37,7 @@ def test_fetch_trending_symbols_retries_on_429_by_default(monkeypatch):
         return _DummyResponse({"finance": {"result": [{"quotes": [{"symbol": "AAPL"}]}]}})
 
     monkeypatch.delenv("RETRY_BACKOFFF_ENABLED", raising=False)
+    monkeypatch.setenv("TRENDING_CANDIDATES_SEARCH_NUMBER", "12")
     monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
     monkeypatch.setattr(data_sources.time, "sleep", lambda seconds: sleeps.append(seconds))
 
@@ -45,6 +46,36 @@ def test_fetch_trending_symbols_retries_on_429_by_default(monkeypatch):
     assert symbols == ["AAPL"]
     assert calls["count"] == 3
     assert sleeps == [1, 2]
+
+
+def test_fetch_trending_symbols_uses_env_count_in_url(monkeypatch):
+    captured = {"url": ""}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        return _DummyResponse({"finance": {"result": [{"quotes": [{"symbol": "AAPL"}]}]}})
+
+    monkeypatch.setenv("TRENDING_CANDIDATES_SEARCH_NUMBER", "15")
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    data_sources.fetch_trending_symbols(region="us", limit=3)
+
+    assert captured["url"].endswith("/US?count=15")
+
+
+def test_fetch_trending_symbols_falls_back_to_limit_when_env_count_invalid(monkeypatch):
+    captured = {"url": ""}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        return _DummyResponse({"finance": {"result": [{"quotes": [{"symbol": "AAPL"}]}]}})
+
+    monkeypatch.setenv("TRENDING_CANDIDATES_SEARCH_NUMBER", "invalid")
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    data_sources.fetch_trending_symbols(region="EU", limit=7)
+
+    assert captured["url"].endswith("/EU?count=7")
 
 
 def test_fetch_trending_symbols_does_not_retry_when_disabled(monkeypatch):
