@@ -374,10 +374,14 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
 
 
 def get_best_candidates(limit: int = 5, user_risk_profile: str = "medium") -> dict:
-    symbols = fetch_trending_symbols(limit=max(limit * 3, 10))
+    symbols: list[str] = []
+    for region in ("US", "EU"):
+        symbols.extend(fetch_trending_symbols(region=region, limit=max(limit * 2, 6)))
+
+    deduplicated_symbols = list(dict.fromkeys(symbols))[: max(limit * 3, 10)]
     candidates = []
 
-    for symbol in symbols:
+    for symbol in deduplicated_symbols:
         try:
             snapshot = get_market_snapshot(symbol)
         except ValueError:
@@ -403,7 +407,7 @@ def get_best_candidates(limit: int = 5, user_risk_profile: str = "medium") -> di
     top_candidates = sorted(candidates, key=lambda item: item["score"], reverse=True)[:limit]
     return {
         "risk_profile": user_risk_profile,
-        "source": "Yahoo Finance trending",
+        "source": "Yahoo Finance trending (US + EU)",
         "candidates": top_candidates,
     }
 

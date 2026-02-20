@@ -102,7 +102,7 @@ def test_generate_suggestion_with_mocks(monkeypatch):
 def test_get_best_candidates_ranks_by_score(monkeypatch):
     monkeypatch.setattr(
         "trading_bot.bot.service.fetch_trending_symbols",
-        lambda limit: ["AAA", "BBB", "CCC"],
+        lambda region, limit: ["AAA", "BBB"] if region == "US" else ["BBB", "CCC"],
     )
 
     snapshots = {
@@ -153,6 +153,7 @@ def test_get_best_candidates_ranks_by_score(monkeypatch):
     assert result["risk_profile"] == "medium"
     assert [candidate["symbol"] for candidate in result["candidates"]] == ["BBB", "AAA"]
     assert len(result["candidates"]) == 2
+    assert result["source"] == "Yahoo Finance trending (US + EU)"
 
 
 def test_get_market_monitor(monkeypatch):
