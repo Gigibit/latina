@@ -30,6 +30,12 @@ class DummyDecider:
             "risk_notes": "test risk",
         }
 
+    def evaluate_trending_candidates(self, candidates):
+        return {
+            "AAA": {"llm_score": 30.0, "summary": "weaker momentum quality"},
+            "BBB": {"llm_score": 90.0, "summary": "best balance of momentum/volume"},
+        }
+
 
 def test_generate_suggestion_with_mocks(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "openai")
@@ -147,6 +153,9 @@ def test_get_best_candidates_ranks_by_score(monkeypatch):
         "trading_bot.bot.service.get_market_snapshot",
         lambda symbol: snapshots[symbol],
     )
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setattr("trading_bot.bot.service.LLMDecider", DummyDecider)
 
     result = get_best_candidates(limit=2, user_risk_profile="medium")
 
@@ -154,6 +163,10 @@ def test_get_best_candidates_ranks_by_score(monkeypatch):
     assert [candidate["symbol"] for candidate in result["candidates"]] == ["BBB", "AAA"]
     assert len(result["candidates"]) == 2
     assert result["source"] == "Yahoo Finance trending (US + EU)"
+    assert result["ranking_strategy"] == "quant_score + openai_comparison"
+    assert result["candidates"][0]["llm_score"] == 90.0
+    assert result["candidates"][0]["llm_summary"] == "best balance of momentum/volume"
+    assert result["candidates"][0]["combined_score"] >= result["candidates"][1]["combined_score"]
 
 
 def test_get_market_monitor(monkeypatch):
