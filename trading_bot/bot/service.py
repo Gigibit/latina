@@ -405,10 +405,38 @@ def get_best_candidates(limit: int = 5, user_risk_profile: str = "medium") -> di
         )
 
     top_candidates = sorted(candidates, key=lambda item: item["score"], reverse=True)[:limit]
+
+    llm_evaluations: dict[str, dict] = {}
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if top_candidates and openai_api_key:
+        openai_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        openai_decider = LLMDecider(provider="openai", model=openai_model, api_key=openai_api_key)
+        llm_evaluations = openai_decider.evaluate_trending_candidates(top_candidates)
+
+    enriched_candidates = []
+    for candidate in top_candidates:
+        llm_data = llm_evaluations.get(candidate["symbol"], {})
+        llm_score = float(llm_data.get("llm_score", candidate["score"]))
+        combined_score = round((candidate["score"] * 0.65) + (llm_score * 0.35), 2)
+        enriched_candidates.append(
+            {
+                **candidate,
+                "llm_score": round(llm_score, 2),
+                "llm_summary": llm_data.get("summary"),
+                "combined_score": combined_score,
+            }
+        )
+
+    ranked_candidates = sorted(
+        enriched_candidates,
+        key=lambda item: item["combined_score"],
+        reverse=True,
+    )
     return {
         "risk_profile": user_risk_profile,
         "source": "Yahoo Finance trending (US + EU)",
-        "candidates": top_candidates,
+        "ranking_strategy": "quant_score + openai_comparison",
+        "candidates": ranked_candidates,
     }
 
 

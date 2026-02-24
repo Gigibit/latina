@@ -22,6 +22,25 @@ Do not include markdown code blocks.
 Do not repeat the full JSON.
 """
 
+TREND_EVALUATION_SYSTEM_PROMPT = """You are a trading ranking assistant.
+You receive candidate symbols with momentum and volume context.
+Return JSON only with this schema:
+{
+  "evaluations": [
+    {
+      "symbol": "TICKER",
+      "llm_score": number from 0 to 100,
+      "summary": "short comparison-driven reason"
+    }
+  ]
+}
+Rules:
+- Score should reflect relative attractiveness between provided candidates.
+- Prefer higher 5d momentum confirmed by healthy relative volume.
+- Penalize unstable downside momentum and weak participation.
+- Keep each summary under 140 characters.
+"""
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,6 +71,33 @@ def _normalize_decision(payload: dict[str, Any]) -> dict[str, Any]:
         "reasoning": reasoning,
         "risk_notes": risk_notes,
     }
+
+
+def _normalize_trend_evaluation(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    evaluations = payload.get("evaluations")
+    if not isinstance(evaluations, list):
+        return {}
+
+    normalized: dict[str, dict[str, Any]] = {}
+    for item in evaluations:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol", "")).upper().strip()
+        if not symbol:
+            continue
+        raw_score = item.get("llm_score", 50)
+        try:
+            llm_score = float(raw_score)
+        except (TypeError, ValueError):
+            llm_score = 50.0
+        llm_score = max(0.0, min(100.0, llm_score))
+        summary = str(item.get("summary", "No LLM comparison provided.")).strip()
+        normalized[symbol] = {
+            "llm_score": round(llm_score, 2),
+            "summary": summary,
+        }
+
+    return normalized
 
 
 class LLMDecider:
@@ -225,3 +271,57 @@ class LLMDecider:
             return content
 
         raise ValueError("Unsupported LLM provider. Use 'openai' or 'huggingface'.")
+
+    def evaluate_trending_candidates(
+        self, candidates: list[dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        ranking_prompt = (
+            "Evaluate and compare these trending candidates for short-term trading quality. "
+            "Use only the provided metrics and return compact JSON.\n\n"
+            f"Candidates:\n{json.dumps(candidates, indent=2, sort_keys=True)}"
+        )
+
+        if self.provider == "openai":
+            if not self.api_key:
+                raise ValueError("OPENAI_API_KEY is missing.")
+            try:
+                from openai import OpenAI
+            except ImportError as exc:
+                raise RuntimeError(
+                    "openai is not installed. Install dependencies from requirements.txt"
+                ) from exc
+            client = OpenAI(api_key=self.api_key)
+            request_payload = {
+                "model": self.model,
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {"role": "system", "content": TREND_EVALUATION_SYSTEM_PROMPT},
+                    {"role": "user", "content": ranking_prompt},
+                ],
+            }
+            logger.info(
+                (
+                    "External request service=openai endpoint=chat.completions "
+                    "provider=%s host=%s payload=%s"
+                ),
+                self.provider,
+                str(getattr(client, "base_url", "https://api.openai.com")).rstrip("/"),
+                _truncate_for_log(json.dumps(request_payload, ensure_ascii=False)),
+            )
+            resp = client.chat.completions.create(
+                **request_payload,
+            )
+            content = resp.choices[0].message.content or "{}"
+            logger.info(
+                (
+                    "External response service=openai endpoint=chat.completions "
+                    "provider=%s model=%s output_chars=%s"
+                ),
+                self.provider,
+                self.model,
+                len(content),
+            )
+            return _normalize_trend_evaluation(json.loads(content))
+
+        raise ValueError("Unsupported LLM provider for trend evaluation. Use 'openai'.")
