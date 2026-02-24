@@ -106,7 +106,10 @@ def fetch_trending_symbols(region: str = "US", limit: int = 10) -> list[str]:
     if payload is None:
         raise RuntimeError("Unable to fetch trending symbols from Yahoo Finance.")
 
-    quotes = payload.get("finance", {}).get("result", [{}])[0].get("quotes", [])
+    finance = payload.get("finance")
+    results = finance.get("result") if isinstance(finance, dict) else None
+    first_result = results[0] if isinstance(results, list) and results else {}
+    quotes = first_result.get("quotes", []) if isinstance(first_result, dict) else []
     symbols: list[str] = []
     for quote in quotes:
         symbol = quote.get("symbol")

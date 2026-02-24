@@ -78,6 +78,16 @@ def test_fetch_trending_symbols_falls_back_to_limit_when_env_count_invalid(monke
     assert captured["url"].endswith("/EU?count=7")
 
 
+def test_fetch_trending_symbols_handles_empty_result_list(monkeypatch):
+    def fake_urlopen(request, timeout):
+        return _DummyResponse({"finance": {"result": []}})
+
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError, match="returned no trending symbols"):
+        data_sources.fetch_trending_symbols(limit=1)
+
+
 def test_fetch_trending_symbols_does_not_retry_when_disabled(monkeypatch):
     def fake_urlopen(request, timeout):
         raise HTTPError(url="http://test", code=429, msg="Too Many Requests", hdrs=None, fp=None)
