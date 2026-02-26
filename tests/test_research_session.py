@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from django.test import RequestFactory
 
 from trading_bot.bot.research_session import ResearchJob, ResearchSessionStore
-from trading_bot.bot.views import trading_suggestion_view
+from trading_bot.bot.views import best_projection_view, trading_suggestion_view
 
 
 def test_research_job_applies_acceptance_threshold(monkeypatch):
@@ -294,3 +294,81 @@ def test_summarize_result_with_llm_fallback_without_api_key(monkeypatch):
 
     assert "Symbol: AAPL" in text
     assert "Action: HOLD" in text
+
+
+def test_best_projection_view_returns_chart_payload(monkeypatch):
+    monkeypatch.setattr(
+        "trading_bot.bot.views.get_best_candidates",
+        lambda limit, user_risk_profile: {
+            "candidates": [
+                {"symbol": "AAA", "combined_score": 10.5, "score": 9.1},
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.views.generate_suggestion",
+        lambda symbol, user_risk_profile: {
+            "candle_size": "1d",
+            "candle_rag_granularity_size": "1h",
+            "buy_probability": 0.63,
+            "sell_probability": 0.37,
+            "decision": {"action": "BUY"},
+        },
+    )
+
+    class _FakeSeries:
+        def __init__(self, values):
+            self._values = values
+
+        def tolist(self):
+            return self._values
+
+        @property
+        def iloc(self):
+            class _FakeIloc:
+                def __init__(self, values):
+                    self._values = values
+
+                def __getitem__(self, idx):
+                    return self._values[idx]
+
+            return _FakeIloc(self._values)
+
+    class _FakeIndex(list):
+        def __getitem__(self, item):
+            return super().__getitem__(item)
+
+    class _FakeFrame:
+        def __init__(self, closes, timestamps):
+            self._closes = closes
+            self.index = _FakeIndex(timestamps)
+
+        def tail(self, _n):
+            return self
+
+        def copy(self):
+            return self
+
+        def __getitem__(self, key):
+            if key == "Close":
+                return _FakeSeries(self._closes)
+            raise KeyError(key)
+
+    from datetime import datetime, timedelta
+
+    timestamps = [datetime(2024, 1, 1) + timedelta(hours=i) for i in range(80)]
+    closes = [100 + (i * 0.1) for i in range(80)]
+    monkeypatch.setattr(
+        "trading_bot.bot.views.get_candle_history",
+        lambda symbol, candle_size, lookback_candles: _FakeFrame(closes, timestamps),
+    )
+
+    request = RequestFactory().get("/api/projections/?risk=medium&limit=5")
+    response = best_projection_view(request)
+
+    assert response.status_code == 200
+    content = response.content.decode("utf-8")
+    assert '"candidate_name": "AAA"' in content
+    assert '"candle_rag_granularity_size": "1h"' in content
+    assert '"predicted_granularity_closes":' in content
+
