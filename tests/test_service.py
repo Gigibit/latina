@@ -267,6 +267,15 @@ def test_get_best_candidates_ranks_by_score(monkeypatch):
     assert result["candidates"][0]["llm_score"] == 90.0
     assert result["candidates"][0]["llm_summary"] == "best balance of momentum/volume"
     assert result["candidates"][0]["combined_score"] >= result["candidates"][1]["combined_score"]
+    assert (
+        result["candidates"][0]["buy_probability"]
+        + result["candidates"][0]["sell_probability"]
+        == 1.0
+    )
+    assert result["candidates"][0]["decision"]["action"] in {"BUY", "SELL", "HOLD"}
+    assert result["candidates"][0]["decision"]["confidence"] >= 50
+    assert result["candidates"][0]["decision"]["reasoning"]
+    assert result["candidates"][0]["decision"]["risk_notes"]
 
 
 def test_get_market_monitor(monkeypatch):
