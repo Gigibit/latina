@@ -87,10 +87,12 @@ button {
 }
 
 .nav-item {
-  min-width: 56px;
+  flex: 1 1 0;
+  min-width: 0;
   background: #fff;
   color: var(--muted);
   font-size: 1.25rem;
+  text-align: center;
   line-height: 1;
   padding: .65rem .75rem;
 }
