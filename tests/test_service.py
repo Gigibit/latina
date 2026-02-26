@@ -36,6 +36,41 @@ class DummyDecider:
             "BBB": {"llm_score": 90.0, "summary": "best balance of momentum/volume"},
         }
 
+class ThresholdPromptDecider:
+    def __init__(self, provider: str, model: str, api_key: str | None) -> None:
+        self.provider = provider
+        self.model = model
+        self.api_key = api_key
+
+    def decide(self, prompt: str):
+        buy_line = next(line for line in prompt.splitlines() if line.startswith("Buy probability"))
+        sell_line = next(
+            line for line in prompt.splitlines() if line.startswith("Sell probability")
+        )
+        buy_probability = float(buy_line.rsplit(": ", 1)[1].rstrip("%")) / 100
+        sell_probability = float(sell_line.rsplit(": ", 1)[1].rstrip("%")) / 100
+
+        assert "If buy_probability - sell_probability >= 0.12 choose BUY." in prompt
+        assert "If sell_probability - buy_probability >= 0.12 choose SELL." in prompt
+        assert "Else choose HOLD." in prompt
+
+        if buy_probability - sell_probability >= 0.12:
+            action = "BUY"
+        elif sell_probability - buy_probability >= 0.12:
+            action = "SELL"
+        else:
+            action = "HOLD"
+
+        return {
+            "action": action,
+            "confidence": 80,
+            "reasoning": "threshold based test decision",
+            "risk_notes": "test",
+        }
+
+
+
+
 
 def test_generate_suggestion_with_mocks(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "openai")
@@ -103,6 +138,70 @@ def test_generate_suggestion_with_mocks(monkeypatch):
     assert result["x_sentiment"]["weight"] == 0.3
     assert result["technical_indicators"]["sma_20"] == 120.0
     assert result["etoro_execution"]["status"] == "skipped"
+
+
+
+def test_generate_suggestion_imbalanced_probabilities_do_not_default_to_hold(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setenv("CANDLE_SIZE", "1d")
+    monkeypatch.setenv("CANDLES_RAG_INFERENCE_NUMER", "10")
+
+    monkeypatch.setattr(
+        "trading_bot.bot.service._build_behavior_samples",
+        lambda symbol, candle_size, rag_inference_number, rag_granularity_size=None: (
+            [
+                {"text": "context 1", "action": "BUY", "next_pct_change": 1.4},
+                {"text": "context 2", "action": "BUY", "next_pct_change": 1.1},
+                {"text": "context 3", "action": "BUY", "next_pct_change": 0.8},
+                {"text": "context 4", "action": "SELL", "next_pct_change": -0.3},
+            ],
+            "query",
+            {
+                "enabled": True,
+                "weight": 0.0,
+                "avg_query_sentiment": 0.0,
+                "weighted_avg_query_sentiment": 0.0,
+            },
+            [100.0, 101.0, 102.0],
+        ),
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.service.compute_technical_indicators",
+        lambda symbol: SimpleNamespace(
+            sma_20=120.0,
+            sma_50=110.0,
+            rsi_14=55.0,
+            macd=1.2,
+            macd_signal=0.8,
+            bollinger_upper=130.0,
+            bollinger_lower=100.0,
+        ),
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.service.fetch_fundamental_metrics",
+        lambda symbol: SimpleNamespace(
+            pe_ratio=20.0,
+            eps=3.5,
+            debt_to_equity=90.0,
+            market_cap=1000000.0,
+        ),
+    )
+    monkeypatch.setattr("trading_bot.bot.service.fetch_macro_indicators", lambda: [])
+    monkeypatch.setattr("trading_bot.bot.service.average_macro_delta", lambda indicators: 0.0)
+    monkeypatch.setattr("trading_bot.bot.service.FaissEmbeddingRetriever", DummyRetriever)
+    monkeypatch.setattr("trading_bot.bot.service.LLMDecider", ThresholdPromptDecider)
+    monkeypatch.setattr(
+        "trading_bot.bot.service.execute_etoro_action",
+        lambda **kwargs: {"status": "skipped"},
+    )
+
+    result = generate_suggestion("AAPL", "medium")
+
+    assert result["buy_probability"] >= 0.7
+    assert result["sell_probability"] <= 0.3
+    assert result["decision"]["action"] == "BUY"
 
 
 def test_get_best_candidates_ranks_by_score(monkeypatch):
