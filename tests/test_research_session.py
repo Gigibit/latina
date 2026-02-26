@@ -146,6 +146,103 @@ def test_research_job_uses_manual_symbols_when_auto_detection_disabled(monkeypat
     assert any("Auto symbol detection disabled" in line for line in job.stream_log)
 
 
+
+
+def test_research_job_non_model_confidence_skips_threshold(monkeypatch):
+    monkeypatch.setenv("SYMBOL_ACTION_ACCEPTANCE_THRESHOLD", "95")
+
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.fetch_trending_symbols",
+        lambda limit: ["AAA"],
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.get_market_snapshot",
+        lambda symbol: SimpleNamespace(
+            symbol=symbol,
+            latest_volume=200.0,
+            avg_volume_20d=100.0,
+            pct_change_5d=2.0,
+        ),
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.fetch_x_sentiment_scores",
+        lambda symbol, days: {day: 0.2 for day in days},
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.generate_suggestion",
+        lambda symbol, user_risk_profile: {
+            "symbol": symbol,
+            "decision": {
+                "action": "BUY",
+                "confidence": 10,
+                "final_confidence": 20,
+                "confidence_source": "fallback",
+                "risk_notes": "original",
+            },
+        },
+    )
+
+    store = ResearchSessionStore()
+    job = ResearchJob(session_id="s-fallback", risk_profile="medium")
+
+    store._run_job(job)
+
+    assert job.status == "completed"
+    assert job.result is not None
+    assert job.result["decision"]["action"] == "BUY"
+    assert job.result["decision"]["decision_quality"] == "low_schema_reliability"
+    assert job.result["discovery"]["accepted"] is True
+    assert "warning" in job.result["discovery"]
+
+
+def test_research_job_threshold_uses_calibrated_final_confidence(monkeypatch):
+    monkeypatch.setenv("SYMBOL_ACTION_ACCEPTANCE_THRESHOLD", "70")
+
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.fetch_trending_symbols",
+        lambda limit: ["AAA"],
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.get_market_snapshot",
+        lambda symbol: SimpleNamespace(
+            symbol=symbol,
+            latest_volume=200.0,
+            avg_volume_20d=100.0,
+            pct_change_5d=2.0,
+        ),
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.fetch_x_sentiment_scores",
+        lambda symbol, days: {day: 0.2 for day in days},
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.generate_suggestion",
+        lambda symbol, user_risk_profile: {
+            "symbol": symbol,
+            "decision": {
+                "action": "BUY",
+                "confidence": 92,
+                "final_confidence": 65,
+                "confidence_source": "model",
+                "risk_notes": "original",
+            },
+        },
+    )
+
+    store = ResearchSessionStore()
+    job = ResearchJob(session_id="s-calibrated", risk_profile="medium")
+
+    store._run_job(job)
+
+    assert job.status == "completed"
+    assert job.result is not None
+    assert job.result["decision"]["action"] == "HOLD"
+    assert job.result["discovery"]["accepted"] is False
+    assert (
+        "Calibrated confidence 65.00 below threshold 70.00."
+        == job.result["decision"]["risk_notes"]
+    )
+
 def test_trading_suggestion_view_async_returns_session_status(monkeypatch):
     fake_job = SimpleNamespace(
         status="running",
