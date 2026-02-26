@@ -156,16 +156,39 @@ class ResearchSessionStore:
                 result.get("decision", {}).get("action"),
             )
             threshold = float(os.getenv("SYMBOL_ACTION_ACCEPTANCE_THRESHOLD", "0"))
-            confidence = float(result.get("decision", {}).get("confidence", 0) or 0)
-            accepted = confidence >= threshold
+            decision = result.setdefault("decision", {})
+            calibrated_confidence = float(
+                decision.get("final_confidence", result.get("final_confidence", 0)) or 0
+            )
+            confidence_source = str(
+                decision.get("confidence_source", result.get("confidence_source", "model"))
+            ).strip()
+            has_reliable_confidence = confidence_source == "model"
+            accepted = calibrated_confidence >= threshold if has_reliable_confidence else True
             result["discovery"] = {
                 "selected_symbol": symbol,
                 "score": round(score, 4),
                 "ranking": ranking,
                 "acceptance_threshold": threshold,
                 "accepted": accepted,
+                "confidence_source": confidence_source,
+                "confidence_reliable": has_reliable_confidence,
             }
-            if not accepted:
+            if not has_reliable_confidence:
+                decision["decision_quality"] = "low_schema_reliability"
+                result["discovery"]["warning"] = (
+                    "Confidence schema deemed non reliable "
+                    f"(confidence_source={confidence_source}). "
+                    "Acceptance threshold was not applied."
+                )
+                self._append_log(
+                    job,
+                    (
+                        "Confidence source not reliable; skipping "
+                        "SYMBOL_ACTION_ACCEPTANCE_THRESHOLD enforcement."
+                    ),
+                )
+            elif not accepted:
                 self._append_log(
                     job,
                     (
@@ -173,9 +196,10 @@ class ResearchSessionStore:
                         "Forcing HOLD to keep execution safe."
                     ),
                 )
-                result["decision"]["action"] = "HOLD"
-                result["decision"]["risk_notes"] = (
-                    f"Confidence {confidence:.2f} below threshold {threshold:.2f}."
+                decision["action"] = "HOLD"
+                decision["risk_notes"] = (
+                    f"Calibrated confidence {calibrated_confidence:.2f} below "
+                    f"threshold {threshold:.2f}."
                 )
 
             if _is_env_flag_enabled("OUTPUTS_READABILITY_ENABLED", True):
