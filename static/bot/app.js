@@ -102,8 +102,13 @@ async function startSuggestionResearch(riskValue, symbolsValue = '') {
 
 function renderProjectionChart(payload) {
   const chart = document.getElementById('projections-chart');
-  const historical = payload?.historical_granularity_closes || [];
-  const predicted = payload?.predicted_granularity_closes || [];
+  const projectionPayload = payload?.result || payload || {};
+  const historical = (projectionPayload.historical_granularity_closes || [])
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value));
+  const predicted = (projectionPayload.predicted_granularity_closes || [])
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value));
   const allValues = [...historical, ...predicted];
 
   if (!chart || allValues.length < 2) {
@@ -167,13 +172,14 @@ async function loadProjection(params) {
   try {
     const response = await fetch(`/api/projections/?${params.toString()}`);
     const data = await response.json();
+    const projectionPayload = data?.result || data;
     renderPayload(output, data);
 
     if (candidateLabel) {
-      candidateLabel.textContent = `Best candidate: ${data.candidate_name || '-'}`;
+      candidateLabel.textContent = `Best candidate: ${projectionPayload.candidate_name || '-'}`;
     }
 
-    renderProjectionChart(data);
+    renderProjectionChart(projectionPayload);
   } catch (error) {
     output.textContent = `Error: ${error.message}`;
     if (candidateLabel) {
