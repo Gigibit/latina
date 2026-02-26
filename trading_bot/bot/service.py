@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from statistics import mean
 
@@ -21,6 +22,8 @@ from trading_bot.bot.retrieval import FaissEmbeddingRetriever
 
 DEFAULT_CHUNKIZATION_MODE = "DEFAULT"
 INTROSPECTIVE_CANDLE_CHUNKIZATION_MODE = "INTROSPECTIVE_CANDLE"
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_chunkization_mode() -> str:
@@ -376,7 +379,17 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
 def get_best_candidates(limit: int = 5, user_risk_profile: str = "medium") -> dict:
     symbols: list[str] = []
     for region in ("US", "EU"):
-        symbols.extend(fetch_trending_symbols(region=region, limit=max(limit * 2, 6)))
+        try:
+            symbols.extend(fetch_trending_symbols(region=region, limit=max(limit * 2, 6)))
+        except RuntimeError as exc:
+            logger.warning(
+                "Skipping trending region=%s due to upstream error: %s",
+                region,
+                exc,
+            )
+
+    if not symbols:
+        raise RuntimeError("Unable to fetch trending symbols from Yahoo Finance.")
 
     deduplicated_symbols = list(dict.fromkeys(symbols))[: max(limit * 3, 10)]
     candidates = []
