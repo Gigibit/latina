@@ -25,6 +25,14 @@ INTROSPECTIVE_CANDLE_CHUNKIZATION_MODE = "INTROSPECTIVE_CANDLE"
 
 logger = logging.getLogger(__name__)
 
+EUROPE_TRENDING_REGIONS = (
+    "IT", "FR", "GB", "AL", "AD", "AT", "BE", "BA", "BG", "BY", "CH", "CY",
+    "CZ", "DK", "EE", "ES", "FI", "GR", "HR", "HU", "IE", "IS", "LI", "LT",
+    "LU", "LV", "MC", "MD", "ME", "MK", "MT", "NL", "NO", "PL", "PT", "RO",
+    "RS", "RU", "SE", "SI", "SK", "SM", "TR", "UA", "VA",
+)
+TRENDING_REGIONS = ("US", *EUROPE_TRENDING_REGIONS)
+
 
 def _resolve_chunkization_mode() -> str:
     mode = os.getenv("CHUNKIZATION_MODE", DEFAULT_CHUNKIZATION_MODE).strip().upper()
@@ -379,21 +387,25 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
 
 
 def get_best_candidates(limit: int = 5, user_risk_profile: str = "medium") -> dict:
-    symbols: list[str] = []
-    for region in ("US", "EU"):
+    symbols_by_zone: dict[str, str] = {}
+    for region in TRENDING_REGIONS:
         try:
-            symbols.extend(fetch_trending_symbols(region=region, limit=max(limit * 2, 6)))
+            region_symbols = fetch_trending_symbols(region=region, limit=max(limit * 2, 6))
         except RuntimeError as exc:
             logger.warning(
                 "Skipping trending region=%s due to upstream error: %s",
                 region,
                 exc,
             )
+            continue
 
-    if not symbols:
+        for symbol in region_symbols:
+            symbols_by_zone.setdefault(symbol, region)
+
+    if not symbols_by_zone:
         raise RuntimeError("Unable to fetch trending symbols from Yahoo Finance.")
 
-    deduplicated_symbols = list(dict.fromkeys(symbols))[: max(limit * 3, 10)]
+    deduplicated_symbols = list(symbols_by_zone)[: max(limit * 3, 10)]
     candidates = []
 
     for symbol in deduplicated_symbols:
@@ -416,6 +428,7 @@ def get_best_candidates(limit: int = 5, user_risk_profile: str = "medium") -> di
                 "pct_change_20d": round(snapshot.pct_change_20d, 2),
                 "relative_volume": round(relative_volume, 2),
                 "score": round(score, 2),
+                "zone": symbols_by_zone.get(symbol, "unknown"),
             }
         )
 
@@ -449,7 +462,7 @@ def get_best_candidates(limit: int = 5, user_risk_profile: str = "medium") -> di
     )
     return {
         "risk_profile": user_risk_profile,
-        "source": "Yahoo Finance trending (US + EU)",
+        "source": "Yahoo Finance trending (US + EU country zones)",
         "ranking_strategy": "quant_score + openai_comparison",
         "candidates": ranked_candidates,
     }

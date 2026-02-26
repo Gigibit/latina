@@ -261,7 +261,8 @@ def test_get_best_candidates_ranks_by_score(monkeypatch):
     assert result["risk_profile"] == "medium"
     assert [candidate["symbol"] for candidate in result["candidates"]] == ["BBB", "AAA"]
     assert len(result["candidates"]) == 2
-    assert result["source"] == "Yahoo Finance trending (US + EU)"
+    assert result["source"] == "Yahoo Finance trending (US + EU country zones)"
+    assert result["candidates"][0]["zone"] == "US"
     assert result["ranking_strategy"] == "quant_score + openai_comparison"
     assert result["candidates"][0]["llm_score"] == 90.0
     assert result["candidates"][0]["llm_summary"] == "best balance of momentum/volume"
@@ -309,7 +310,7 @@ def test_generate_suggestion_validates_granularity_is_less_than_candle_size(monk
 
 def test_get_best_candidates_skips_failed_region(monkeypatch):
     def fake_fetch(region, limit):
-        if region == "EU":
+        if region == "IT":
             raise RuntimeError("Yahoo Finance returned no trending symbols.")
         return ["AAA", "BBB"]
 
