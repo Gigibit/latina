@@ -446,12 +446,50 @@ def get_best_candidates(limit: int = 5, user_risk_profile: str = "medium") -> di
         llm_data = llm_evaluations.get(candidate["symbol"], {})
         llm_score = float(llm_data.get("llm_score", candidate["score"]))
         combined_score = round((candidate["score"] * 0.65) + (llm_score * 0.35), 2)
+
+        buy_probability = round(min(max((combined_score + 100) / 200, 0.0001), 0.9999), 4)
+        sell_probability = round(1 - buy_probability, 4)
+        probability_delta = buy_probability - sell_probability
+        if probability_delta >= 0.12:
+            action = "BUY"
+        elif probability_delta <= -0.12:
+            action = "SELL"
+        else:
+            action = "HOLD"
+
+        confidence = int(round(max(buy_probability, sell_probability) * 100))
+        if action == "BUY":
+            reasoning = (
+                "Buy probability significantly exceeds sell probability, "
+                "indicating a stronger likelihood of price increase."
+            )
+        elif action == "SELL":
+            reasoning = (
+                "Sell probability significantly exceeds buy probability, "
+                "indicating a stronger likelihood of price decline."
+            )
+        else:
+            reasoning = (
+                "Buy and sell probabilities are close, so there is no clear directional edge."
+            )
+
         enriched_candidates.append(
             {
                 **candidate,
                 "llm_score": round(llm_score, 2),
                 "llm_summary": llm_data.get("summary"),
                 "combined_score": combined_score,
+                "buy_probability": buy_probability,
+                "sell_probability": sell_probability,
+                "decision": {
+                    "action": action,
+                    "confidence": confidence,
+                    "reasoning": reasoning,
+                    "risk_notes": (
+                        f"{user_risk_profile.capitalize()} risk profile with "
+                        "moderate uncertainty on trend continuation."
+                    ),
+                },
             }
         )
 
