@@ -100,6 +100,88 @@ async function startSuggestionResearch(riskValue, symbolsValue = '') {
   }
 }
 
+function renderProjectionChart(payload) {
+  const chart = document.getElementById('projections-chart');
+  const historical = payload?.historical_granularity_closes || [];
+  const predicted = payload?.predicted_granularity_closes || [];
+  const allValues = [...historical, ...predicted];
+
+  if (!chart || allValues.length < 2) {
+    if (chart) {
+      chart.innerHTML = '<text x="20" y="40">Not enough data for chart.</text>';
+    }
+    return;
+  }
+
+  const width = 1000;
+  const height = 320;
+  const paddingX = 40;
+  const paddingY = 30;
+  const minValue = Math.min(...allValues);
+  const maxValue = Math.max(...allValues);
+  const range = Math.max(maxValue - minValue, 0.0001);
+
+  const totalPoints = allValues.length;
+  const xFor = (index) => {
+    if (totalPoints <= 1) {
+      return width / 2;
+    }
+    return paddingX + ((width - paddingX * 2) * index) / (totalPoints - 1);
+  };
+  const yFor = (value) => {
+    const normalized = (value - minValue) / range;
+    return height - paddingY - normalized * (height - paddingY * 2);
+  };
+
+  const buildPath = (points) => points.map((point, index) => `${index === 0 ? 'M' : 'L'}${point[0].toFixed(2)} ${point[1].toFixed(2)}`).join(' ');
+
+  const historicalPoints = historical.map((value, index) => [xFor(index), yFor(value)]);
+  const predictedPoints = predicted.map((value, index) => [xFor(historical.length - 1 + index), yFor(value)]);
+
+  const historicalPath = buildPath(historicalPoints);
+  const predictedPath = buildPath(predictedPoints);
+  const separatorX = xFor(Math.max(historical.length - 1, 0));
+
+  chart.setAttribute('viewBox', `0 0 ${width} ${height}`);
+  chart.innerHTML = `
+    <line class="axis" x1="${paddingX}" y1="${height - paddingY}" x2="${width - paddingX}" y2="${height - paddingY}" />
+    <line class="axis" x1="${paddingX}" y1="${paddingY}" x2="${paddingX}" y2="${height - paddingY}" />
+    <path class="historical-line" d="${historicalPath}" />
+    <path class="predicted-line" d="${predictedPath}" />
+    <line class="separator" x1="${separatorX}" y1="${paddingY}" x2="${separatorX}" y2="${height - paddingY}" />
+    <text x="${paddingX + 4}" y="${paddingY + 16}">Max ${maxValue.toFixed(2)}</text>
+    <text x="${paddingX + 4}" y="${height - paddingY - 8}">Min ${minValue.toFixed(2)}</text>
+    <text x="${Math.max(separatorX - 120, paddingX + 4)}" y="${paddingY + 36}">Next candle projection</text>
+  `;
+}
+
+async function loadProjection(params) {
+  const output = document.getElementById('projections-output');
+  const candidateLabel = document.getElementById('projection-candidate-name');
+
+  output.textContent = 'Loading...';
+  if (candidateLabel) {
+    candidateLabel.textContent = 'Best candidate: Loading...';
+  }
+
+  try {
+    const response = await fetch(`/api/projections/?${params.toString()}`);
+    const data = await response.json();
+    renderPayload(output, data);
+
+    if (candidateLabel) {
+      candidateLabel.textContent = `Best candidate: ${data.candidate_name || '-'}`;
+    }
+
+    renderProjectionChart(data);
+  } catch (error) {
+    output.textContent = `Error: ${error.message}`;
+    if (candidateLabel) {
+      candidateLabel.textContent = 'Best candidate: -';
+    }
+  }
+}
+
 suggestionForm.addEventListener('submit', (event) => {
   event.preventDefault();
   const formData = new FormData(event.target);
@@ -127,4 +209,11 @@ document.getElementById('monitor-form').addEventListener('submit', (event) => {
   callApi(`/api/market-monitor/?${params.toString()}`, 'monitor-output');
 });
 
+document.getElementById('projections-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  const params = new URLSearchParams(new FormData(event.target));
+  loadProjection(params);
+});
+
 startSuggestionResearch('medium');
+document.getElementById('projections-form').requestSubmit();

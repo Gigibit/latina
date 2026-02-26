@@ -73,7 +73,7 @@ button {
   right: 0;
   bottom: 0;
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: .5rem;
   background: rgb(2 6 23 / 95%);
   border-top: 1px solid rgb(148 163 184 / 25%);
@@ -89,4 +89,44 @@ button {
   color: white;
   border-color: var(--primary);
   box-shadow: 0 0 0 1px var(--primary);
+}
+
+
+.projection-candidate-name {
+  font-weight: 700;
+}
+
+.projection-chart {
+  width: 100%;
+  min-height: 260px;
+  background: rgb(11 18 32 / 75%);
+}
+
+.projection-chart .axis {
+  stroke: rgb(148 163 184 / 40%);
+  stroke-width: 1;
+}
+
+.projection-chart .historical-line {
+  fill: none;
+  stroke: #94a3b8;
+  stroke-width: 3;
+}
+
+.projection-chart .predicted-line {
+  fill: none;
+  stroke: #38bdf8;
+  stroke-width: 3;
+  stroke-dasharray: 8 6;
+}
+
+.projection-chart .separator {
+  stroke: rgb(148 163 184 / 80%);
+  stroke-width: 2;
+  stroke-dasharray: 4 4;
+}
+
+.projection-chart text {
+  fill: var(--muted);
+  font-size: 18px;
 }
