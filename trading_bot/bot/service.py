@@ -344,7 +344,9 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
         f"Selected market context:\n{context_blob}\n"
         "Return strict JSON with keys action, confidence, reasoning, risk_notes. "
         f"Predict whether next {candle_size} should be BUY, SELL, or HOLD. "
-        "Use HOLD when evidence is contradictory or uncertainty is high."
+        "Decision rule: If buy_probability - sell_probability >= 0.12 choose BUY. "
+        "If sell_probability - buy_probability >= 0.12 choose SELL. "
+        "Else choose HOLD. Apply HOLD only when evidence is mixed or uncertainty is high."
     )
 
     decision = decider.decide(prompt)
