@@ -1,6 +1,30 @@
 const pretty = (data) => JSON.stringify(data, null, 2);
 
-async function fetchAndRender(url, outputEl) {
+function formatCandidates(payload) {
+  const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
+  if (!candidates.length) {
+    return pretty(payload);
+  }
+
+  const lines = [
+    `Source: ${payload.source}`,
+    `Risk profile: ${payload.risk_profile}`,
+    "",
+    "Candidates:",
+  ];
+
+  candidates.forEach((candidate, index) => {
+    lines.push(
+      `${index + 1}. ${candidate.symbol} | zone: ${candidate.zone || "n/a"} | ` +
+        `score: ${candidate.score} | combined: ${candidate.combined_score}`
+    );
+  });
+
+  lines.push("", "Raw payload:", pretty(payload));
+  return lines.join("\n");
+}
+
+async function fetchAndRender(url, outputEl, formatter = pretty) {
   outputEl.classList.remove("error");
   outputEl.textContent = "Loading...";
   try {
@@ -9,7 +33,7 @@ async function fetchAndRender(url, outputEl) {
     if (!response.ok) {
       throw new Error(payload.error || "Request failed");
     }
-    outputEl.textContent = pretty(payload);
+    outputEl.textContent = formatter(payload);
   } catch (error) {
     outputEl.classList.add("error");
     outputEl.textContent = error.message;
@@ -31,7 +55,11 @@ candidatesForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const limit = document.getElementById("limit").value;
   const risk = document.getElementById("risk-candidates").value;
-  fetchAndRender(`/api/candidates/?limit=${encodeURIComponent(limit)}&risk=${encodeURIComponent(risk)}`, candidatesOutput);
+  fetchAndRender(
+    `/api/candidates/?limit=${encodeURIComponent(limit)}&risk=${encodeURIComponent(risk)}`,
+    candidatesOutput,
+    formatCandidates,
+  );
 });
 
 const monitorForm = document.getElementById("monitor-form");
