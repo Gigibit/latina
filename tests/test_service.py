@@ -206,3 +206,57 @@ def test_generate_suggestion_validates_granularity_is_less_than_candle_size(monk
 
     with pytest.raises(ValueError, match="must be strictly less than CANDLE_SIZE"):
         generate_suggestion("AAPL", "medium")
+
+
+def test_get_best_candidates_skips_failed_region(monkeypatch):
+    def fake_fetch(region, limit):
+        if region == "EU":
+            raise RuntimeError("Yahoo Finance returned no trending symbols.")
+        return ["AAA", "BBB"]
+
+    monkeypatch.setattr("trading_bot.bot.service.fetch_trending_symbols", fake_fetch)
+
+    snapshots = {
+        "AAA": type(
+            "Snapshot",
+            (),
+            {
+                "symbol": "AAA",
+                "latest_close": 100.0,
+                "pct_change_5d": 4.0,
+                "pct_change_20d": 9.0,
+                "avg_volume_20d": 100.0,
+                "latest_volume": 120.0,
+            },
+        )(),
+        "BBB": type(
+            "Snapshot",
+            (),
+            {
+                "symbol": "BBB",
+                "latest_close": 50.0,
+                "pct_change_5d": 6.0,
+                "pct_change_20d": 11.0,
+                "avg_volume_20d": 100.0,
+                "latest_volume": 160.0,
+            },
+        )(),
+    }
+    monkeypatch.setattr(
+        "trading_bot.bot.service.get_market_snapshot",
+        lambda symbol: snapshots[symbol],
+    )
+
+    result = get_best_candidates(limit=2, user_risk_profile="medium")
+
+    assert [candidate["symbol"] for candidate in result["candidates"]] == ["BBB", "AAA"]
+
+
+def test_get_best_candidates_fails_when_all_regions_fail(monkeypatch):
+    monkeypatch.setattr(
+        "trading_bot.bot.service.fetch_trending_symbols",
+        lambda region, limit: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    with pytest.raises(RuntimeError, match="Unable to fetch trending symbols"):
+        get_best_candidates(limit=2, user_risk_profile="medium")
