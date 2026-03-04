@@ -245,6 +245,14 @@ def get_candle_history(symbol: str, candle_size: str = "1d", lookback_candles: i
     if last_exception is not None:
         raise last_exception
     raise RuntimeError("Unable to fetch candle history from configured providers.")
+    if provider == "alpha_vantage":
+        return _get_alpha_vantage_candle_history(
+            symbol=symbol,
+            candle_size=candle_size,
+            lookback_candles=lookback_candles,
+        )
+
+    raise ValueError("MARKETS_DATA_PROVIDER must be one of: yfinance, stooq, alpha_vantage")
 
 
 def _get_yfinance_candle_history(
@@ -349,6 +357,95 @@ def _normalize_stooq_symbol(symbol: str) -> str:
     return f"{cleaned}.us"
 
 
+def _get_alpha_vantage_candle_history(
+    symbol: str, candle_size: str = "1d", lookback_candles: int = 180
+):
+    import pandas as pd
+
+    api_key = os.getenv("ALPHA_VANTAGE_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "ALPHA_VANTAGE_API_KEY is required when MARKETS_DATA_PROVIDER=alpha_vantage"
+        )
+
+    interval, candle_span = resolve_candle_size(candle_size)
+    history_length = max(int(lookback_candles * candle_span) + 5, 60)
+
+    if interval == "1h":
+        api_url = (
+            "https://www.alphavantage.co/query?"
+            f"function=TIME_SERIES_INTRADAY&symbol={quote_plus(symbol.upper())}"
+            "&interval=60min&outputsize=full"
+            f"&apikey={quote_plus(api_key)}"
+        )
+        series_key = "Time Series (60min)"
+    else:
+        api_url = (
+            "https://www.alphavantage.co/query?"
+            f"function=TIME_SERIES_DAILY_ADJUSTED&symbol={quote_plus(symbol.upper())}"
+            "&outputsize=full"
+            f"&apikey={quote_plus(api_key)}"
+        )
+        series_key = "Time Series (Daily)"
+
+    request = Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
+    logger.info("External request service=alpha_vantage endpoint=history symbol=%s", symbol.upper())
+    try:
+        with urlopen(request, timeout=8) as response:
+            raw_payload = response.read().decode("utf-8")
+    except (HTTPError, URLError, TimeoutError) as exc:
+        logger.warning(
+            "External response service=alpha_vantage endpoint=history symbol=%s error=%s",
+            symbol.upper(),
+            exc,
+        )
+        raise RuntimeError("Unable to fetch candles from Alpha Vantage.") from exc
+
+    payload = json.loads(raw_payload)
+    if "Error Message" in payload:
+        raise RuntimeError(f"Alpha Vantage error for symbol '{symbol}'.")
+    if "Note" in payload:
+        raise RuntimeError("Alpha Vantage rate limit reached. Try again later.")
+
+    raw_series = payload.get(series_key)
+    if not isinstance(raw_series, dict) or not raw_series:
+        raise ValueError(f"Not enough data found for symbol '{symbol}'.")
+
+    rows: list[dict[str, object]] = []
+    for timestamp, values in raw_series.items():
+        if not isinstance(values, dict):
+            continue
+        try:
+            rows.append(
+                {
+                    "Date": timestamp,
+                    "Open": float(values.get("1. open", "nan")),
+                    "High": float(values.get("2. high", "nan")),
+                    "Low": float(values.get("3. low", "nan")),
+                    "Close": float(values.get("4. close", "nan")),
+                    "Volume": float(values.get("6. volume") or values.get("5. volume") or "nan"),
+                }
+            )
+        except ValueError:
+            continue
+
+    frame = pd.DataFrame(rows).dropna()
+    if frame.empty:
+        raise ValueError(f"Not enough data found for symbol '{symbol}'.")
+
+    frame["Date"] = pd.to_datetime(frame["Date"], errors="coerce")
+    frame = frame.dropna(subset=["Date"]).set_index("Date").sort_index().tail(history_length)
+    if frame.empty:
+        raise ValueError(f"Not enough data found for symbol '{symbol}'.")
+
+    logger.info(
+        "External response service=alpha_vantage endpoint=history symbol=%s rows=%s",
+        symbol.upper(),
+        len(frame),
+    )
+    return frame
+
+
 def fetch_x_sentiment_scores(symbol: str, days: list[date]) -> dict[date, float]:
     """Return sentiment scores for each day in range [-1, 1].
 
@@ -428,8 +525,11 @@ def fetch_fundamental_metrics(symbol: str) -> FundamentalMetrics:
             market_cap=None,
         )
 
+    if provider == "alpha_vantage":
+        return _fetch_alpha_vantage_fundamentals(symbol)
+
     if provider != "yfinance":
-        raise ValueError("MARKETS_DATA_PROVIDER must be one of: yfinance, stooq")
+        raise ValueError("MARKETS_DATA_PROVIDER must be one of: yfinance, stooq, alpha_vantage")
 
     try:
         import yfinance as yf
@@ -458,6 +558,49 @@ def fetch_fundamental_metrics(symbol: str) -> FundamentalMetrics:
         eps=_safe_float(info.get("trailingEps") or info.get("epsCurrentYear")),
         debt_to_equity=_safe_float(info.get("debtToEquity")),
         market_cap=_safe_float(info.get("marketCap")),
+    )
+
+
+def _fetch_alpha_vantage_fundamentals(symbol: str) -> FundamentalMetrics:
+    api_key = os.getenv("ALPHA_VANTAGE_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "ALPHA_VANTAGE_API_KEY is required when MARKETS_DATA_PROVIDER=alpha_vantage"
+        )
+
+    api_url = (
+        "https://www.alphavantage.co/query?"
+        f"function=OVERVIEW&symbol={quote_plus(symbol.upper())}"
+        f"&apikey={quote_plus(api_key)}"
+    )
+    request = Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
+    logger.info(
+        "External request service=alpha_vantage endpoint=fundamentals symbol=%s",
+        symbol.upper(),
+    )
+
+    try:
+        with urlopen(request, timeout=8) as response:
+            raw_payload = response.read().decode("utf-8")
+    except (HTTPError, URLError, TimeoutError) as exc:
+        logger.warning(
+            "External response service=alpha_vantage endpoint=fundamentals symbol=%s error=%s",
+            symbol.upper(),
+            exc,
+        )
+        raise RuntimeError("Unable to fetch fundamentals from Alpha Vantage.") from exc
+
+    payload = json.loads(raw_payload)
+    if "Error Message" in payload:
+        raise RuntimeError(f"Alpha Vantage error for symbol '{symbol}'.")
+    if "Note" in payload:
+        raise RuntimeError("Alpha Vantage rate limit reached. Try again later.")
+
+    return FundamentalMetrics(
+        pe_ratio=_safe_float(payload.get("PERatio")),
+        eps=_safe_float(payload.get("EPS")),
+        debt_to_equity=_safe_float(payload.get("DebtToEquityRatio")),
+        market_cap=_safe_float(payload.get("MarketCapitalization")),
     )
 
 

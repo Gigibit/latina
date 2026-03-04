@@ -158,6 +158,48 @@ def test_get_candle_history_stooq_uses_env_timeout(monkeypatch):
 
     assert captured["timeout"] == 10800
 
+
+def test_get_candle_history_alpha_vantage_provider(monkeypatch):
+    payload = {
+        "Time Series (Daily)": {
+            "2024-01-03": {
+                "1. open": "11",
+                "2. high": "12",
+                "3. low": "10",
+                "4. close": "11.5",
+                "6. volume": "120",
+            },
+            "2024-01-02": {
+                "1. open": "10",
+                "2. high": "11",
+                "3. low": "9",
+                "4. close": "10.5",
+                "6. volume": "100",
+            },
+        }
+    }
+
+    def fake_urlopen(request, timeout):
+        return _DummyResponse(payload)
+
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "alpha_vantage")
+    monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "demo")
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    history = data_sources.get_candle_history(symbol="AAPL", candle_size="1d", lookback_candles=2)
+
+    assert list(history.columns) == ["Open", "High", "Low", "Close", "Volume"]
+    assert len(history) == 2
+    assert str(history.index[0].date()) == "2024-01-02"
+
+
+def test_get_candle_history_alpha_vantage_requires_api_key(monkeypatch):
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "alpha_vantage")
+    monkeypatch.delenv("ALPHA_VANTAGE_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="ALPHA_VANTAGE_API_KEY"):
+        data_sources.get_candle_history(symbol="AAPL")
+
 def test_get_candle_history_rejects_unknown_provider(monkeypatch):
     monkeypatch.setenv("MARKETS_DATA_PROVIDER", "unknown")
 
@@ -235,3 +277,26 @@ def test_fetch_fundamental_metrics_rejects_unknown_provider(monkeypatch):
 
     with pytest.raises(ValueError, match="MARKETS_DATA_PROVIDER must be one of"):
         data_sources.fetch_fundamental_metrics("AAPL")
+
+
+def test_fetch_fundamental_metrics_alpha_vantage_provider(monkeypatch):
+    payload = {
+        "PERatio": "23.4",
+        "EPS": "4.2",
+        "DebtToEquityRatio": "1.1",
+        "MarketCapitalization": "1000000000",
+    }
+
+    def fake_urlopen(request, timeout):
+        return _DummyResponse(payload)
+
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "alpha_vantage")
+    monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "demo")
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    metrics = data_sources.fetch_fundamental_metrics("AAPL")
+
+    assert metrics.pe_ratio == 23.4
+    assert metrics.eps == 4.2
+    assert metrics.debt_to_equity == 1.1
+    assert metrics.market_cap == 1000000000.0
