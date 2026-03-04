@@ -459,4 +459,63 @@ def test_research_job_fails_when_rate_limit_retries_exhausted(monkeypatch):
 
     assert job.status == "failed"
     assert job.error is not None
-    assert "Too Many Requests" in job.error
+    assert "rate limiting" in job.error.lower()
+
+
+def test_research_job_continues_with_next_symbol_after_rate_limit_anomaly(monkeypatch):
+    monkeypatch.setenv("SUGGESTION_RATE_LIMIT_MAX_ATTEMPTS", "1")
+
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.fetch_trending_symbols",
+        lambda limit: ["AAA", "BBB"],
+    )
+
+    snapshots = {
+        "AAA": SimpleNamespace(
+            symbol="AAA",
+            latest_volume=200.0,
+            avg_volume_20d=100.0,
+            pct_change_5d=4.0,
+        ),
+        "BBB": SimpleNamespace(
+            symbol="BBB",
+            latest_volume=180.0,
+            avg_volume_20d=100.0,
+            pct_change_5d=3.0,
+        ),
+    }
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.get_market_snapshot",
+        lambda symbol: snapshots[symbol],
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.fetch_x_sentiment_scores",
+        lambda symbol, days: {day: 0.5 for day in days},
+    )
+
+    def _generate(symbol, user_risk_profile):
+        if symbol == "AAA":
+            raise RuntimeError("Too Many Requests. Rate limited. Try after a while.")
+        return {
+            "symbol": symbol,
+            "decision": {
+                "action": "BUY",
+                "confidence": 80,
+                "risk_notes": "ok",
+            },
+        }
+
+    monkeypatch.setattr("trading_bot.bot.research_session.generate_suggestion", _generate)
+    monkeypatch.setattr("trading_bot.bot.research_session.time.sleep", lambda _: None)
+
+    store = ResearchSessionStore()
+    job = ResearchJob(session_id="s-rate-limit-fallback", risk_profile="medium")
+
+    store._run_job(job)
+
+    assert job.status == "completed"
+    assert job.result is not None
+    assert job.result["symbol"] == "BBB"
+    assert job.result["discovery"]["selected_symbol"] == "BBB"
+    assert job.result["discovery"]["anomalies"]
+    assert any("Suggestion model anomaly on AAA" in line for line in job.stream_log)
