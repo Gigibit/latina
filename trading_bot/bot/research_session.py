@@ -185,28 +185,55 @@ class ResearchSessionStore:
                 score,
                 len(ranking),
             )
-            self._append_log(
-                job,
-                (
-                    f"Selected symbol {symbol} with discovery score {score:.2f}. "
-                    "Running suggestion model..."
-                ),
-            )
+            anomaly_notes: list[str] = []
+            selected_symbol = symbol
+            selected_score = score
+            result: dict[str, Any] | None = None
 
-            logger.info(
-                "Research workload generating suggestion session_id=%s symbol=%s",
-                job.session_id,
-                symbol,
-            )
-            result = _suggestion_with_retry(
-                symbol=symbol,
-                risk_profile=job.risk_profile,
-                log_callback=lambda message: self._append_log(job, message),
-            )
+            for candidate in ranking:
+                candidate_symbol = str(candidate["symbol"])
+                candidate_score = float(candidate["score"])
+                self._append_log(
+                    job,
+                    (
+                        f"Selected symbol {candidate_symbol} with discovery score "
+                        f"{candidate_score:.2f}. Running suggestion model..."
+                    ),
+                )
+
+                logger.info(
+                    "Research workload generating suggestion session_id=%s symbol=%s",
+                    job.session_id,
+                    candidate_symbol,
+                )
+                try:
+                    result = _suggestion_with_retry(
+                        symbol=candidate_symbol,
+                        risk_profile=job.risk_profile,
+                        log_callback=lambda message: self._append_log(job, message),
+                    )
+                    selected_symbol = candidate_symbol
+                    selected_score = candidate_score
+                    break
+                except Exception as exc:
+                    if not _is_rate_limited_exception(exc):
+                        raise
+                    note = (
+                        f"Suggestion model anomaly on {candidate_symbol}: {exc}. "
+                        "Continuing with next candidate."
+                    )
+                    anomaly_notes.append(note)
+                    self._append_log(job, note)
+
+            if result is None:
+                raise RuntimeError(
+                    "Suggestion model unavailable for all candidate symbols due to rate limiting."
+                )
+
             logger.info(
                 "Research workload suggestion generated session_id=%s symbol=%s decision=%s",
                 job.session_id,
-                symbol,
+                selected_symbol,
                 result.get("decision", {}).get("action"),
             )
             threshold = float(os.getenv("SYMBOL_ACTION_ACCEPTANCE_THRESHOLD", "0"))
@@ -220,14 +247,20 @@ class ResearchSessionStore:
             has_reliable_confidence = confidence_source == "model"
             accepted = calibrated_confidence >= threshold if has_reliable_confidence else True
             result["discovery"] = {
-                "selected_symbol": symbol,
-                "score": round(score, 4),
+                "selected_symbol": selected_symbol,
+                "score": round(selected_score, 4),
                 "ranking": ranking,
                 "acceptance_threshold": threshold,
                 "accepted": accepted,
                 "confidence_source": confidence_source,
                 "confidence_reliable": has_reliable_confidence,
             }
+            if anomaly_notes:
+                result["discovery"]["anomalies"] = anomaly_notes
+                result["discovery"]["warning"] = (
+                    "One or more symbols showed suggestion model anomalies; "
+                    "fallback symbol was used."
+                )
             if not has_reliable_confidence:
                 decision["decision_quality"] = "low_schema_reliability"
                 result["discovery"]["warning"] = (
@@ -262,7 +295,7 @@ class ResearchSessionStore:
             logger.info(
                 "Research workload completed session_id=%s selected_symbol=%s accepted=%s",
                 job.session_id,
-                symbol,
+                selected_symbol,
                 accepted,
             )
             with self._lock:
