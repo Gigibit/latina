@@ -189,20 +189,62 @@ def get_candle_history(symbol: str, candle_size: str = "1d", lookback_candles: i
     provider = os.getenv("MARKETS_DATA_PROVIDER", "yfinance").strip().lower()
 
     if provider == "yfinance":
-        return _get_yfinance_candle_history(
-            symbol=symbol,
-            candle_size=candle_size,
-            lookback_candles=lookback_candles,
-        )
+        providers_chain = ["yfinance"]
+        if _is_env_flag_enabled("YFINANCE_FALLBACK_TO_STOOQ_ENABLED", default=True):
+            providers_chain.append("stooq")
+    elif provider == "stooq":
+        providers_chain = ["stooq"]
+        if _is_env_flag_enabled("STOOQ_FALLBACK_TO_YFINANCE_ENABLED", default=False):
+            providers_chain.append("yfinance")
+    else:
+        raise ValueError("MARKETS_DATA_PROVIDER must be one of: yfinance, stooq")
 
-    if provider == "stooq":
-        return _get_stooq_candle_history(
-            symbol=symbol,
-            candle_size=candle_size,
-            lookback_candles=lookback_candles,
-        )
+    logger.info(
+        "Candle history request symbol=%s candle_size=%s lookback=%s providers_chain=%s",
+        symbol.upper(),
+        candle_size,
+        lookback_candles,
+        "->".join(providers_chain),
+    )
 
-    raise ValueError("MARKETS_DATA_PROVIDER must be one of: yfinance, stooq")
+    last_exception: Exception | None = None
+    for index, provider_name in enumerate(providers_chain, start=1):
+        logger.info(
+            "Candle history provider attempt symbol=%s provider=%s attempt=%s/%s",
+            symbol.upper(),
+            provider_name,
+            index,
+            len(providers_chain),
+        )
+        try:
+            if provider_name == "yfinance":
+                return _get_yfinance_candle_history(
+                    symbol=symbol,
+                    candle_size=candle_size,
+                    lookback_candles=lookback_candles,
+                )
+            return _get_stooq_candle_history(
+                symbol=symbol,
+                candle_size=candle_size,
+                lookback_candles=lookback_candles,
+            )
+        except Exception as exc:
+            last_exception = exc
+            has_fallback = index < len(providers_chain)
+            logger.warning(
+                "Candle history provider failed symbol=%s provider=%s "
+                "error=%s fallback_remaining=%s",
+                symbol.upper(),
+                provider_name,
+                exc,
+                has_fallback,
+            )
+            if not has_fallback:
+                raise
+
+    if last_exception is not None:
+        raise last_exception
+    raise RuntimeError("Unable to fetch candle history from configured providers.")
 
 
 def _get_yfinance_candle_history(

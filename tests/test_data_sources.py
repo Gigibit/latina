@@ -1,4 +1,5 @@
 import json
+import types
 from urllib.error import HTTPError
 
 import pytest
@@ -162,6 +163,60 @@ def test_get_candle_history_rejects_unknown_provider(monkeypatch):
 
     with pytest.raises(ValueError, match="MARKETS_DATA_PROVIDER must be one of"):
         data_sources.get_candle_history(symbol="AAPL")
+
+
+def test_get_candle_history_yfinance_falls_back_to_stooq(monkeypatch):
+    csv_payload = """Date,Open,High,Low,Close,Volume
+2024-01-02,10,11,9,10.5,100
+2024-01-03,11,12,10,11.5,120
+"""
+
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "yfinance")
+    monkeypatch.setenv("YFINANCE_FALLBACK_TO_STOOQ_ENABLED", "true")
+
+    class _DummyTicker:
+        def __init__(self, _symbol):
+            pass
+
+        def history(self, period, interval):
+            raise RuntimeError("yfinance upstream timeout")
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "yfinance",
+        types.SimpleNamespace(Ticker=_DummyTicker),
+    )
+    monkeypatch.setattr(
+        data_sources,
+        "urlopen",
+        lambda request, timeout: _DummyCsvResponse(csv_payload),
+    )
+
+    history = data_sources.get_candle_history(symbol="AAPL", candle_size="1d", lookback_candles=2)
+
+    assert len(history) == 2
+    assert float(history.iloc[-1]["Close"]) == 11.5
+
+
+def test_get_candle_history_yfinance_fallback_disabled_raises_original_error(monkeypatch):
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "yfinance")
+    monkeypatch.setenv("YFINANCE_FALLBACK_TO_STOOQ_ENABLED", "false")
+
+    class _DummyTicker:
+        def __init__(self, _symbol):
+            pass
+
+        def history(self, period, interval):
+            raise RuntimeError("yfinance upstream timeout")
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "yfinance",
+        types.SimpleNamespace(Ticker=_DummyTicker),
+    )
+
+    with pytest.raises(RuntimeError, match="yfinance upstream timeout"):
+        data_sources.get_candle_history(symbol="AAPL", candle_size="1d", lookback_candles=2)
 
 
 def test_fetch_fundamental_metrics_skips_for_stooq(monkeypatch):
