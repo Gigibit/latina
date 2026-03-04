@@ -1,6 +1,6 @@
 import json
 import types
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -158,6 +158,45 @@ def test_get_candle_history_stooq_uses_env_timeout(monkeypatch):
 
     assert captured["timeout"] == 10800
 
+
+
+
+def test_get_candle_history_stooq_retries_on_network_error(monkeypatch):
+    csv_payload = """Date,Open,High,Low,Close,Volume
+2024-01-02,10,11,9,10.5,100
+"""
+
+    calls = {"count": 0}
+    sleeps: list[int] = []
+
+    def fake_urlopen(request, timeout):
+        calls["count"] += 1
+        if calls["count"] < 3:
+            raise URLError("connection reset by peer")
+        return _DummyCsvResponse(csv_payload)
+
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "stooq")
+    monkeypatch.setenv("RETRY_BACKOFFF_ENABLED", "true")
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+    monkeypatch.setattr(data_sources.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    history = data_sources.get_candle_history(symbol="AAPL", candle_size="1d", lookback_candles=1)
+
+    assert len(history) == 1
+    assert calls["count"] == 3
+    assert sleeps == [1, 2]
+
+
+def test_get_candle_history_stooq_does_not_retry_when_disabled(monkeypatch):
+    def fake_urlopen(request, timeout):
+        raise URLError("connection reset by peer")
+
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "stooq")
+    monkeypatch.setenv("RETRY_BACKOFFF_ENABLED", "false")
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError, match="Unable to fetch candles from Stooq"):
+        data_sources.get_candle_history(symbol="AAPL", candle_size="1d", lookback_candles=1)
 
 def test_get_candle_history_alpha_vantage_provider(monkeypatch):
     payload = {

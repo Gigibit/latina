@@ -99,4 +99,5 @@ When action is `HOLD`, the API call is skipped and cooldown still gets updated i
 - `RETRY_BACKOFFF_ENABLED` toggles retry + exponential backoff for rate-limited trending-symbol scraping (default: `true`).
 - `TRENDING_CANDIDATES_SEARCH_NUMBER` controls Yahoo Finance trending query size via `?count=` (default: `10`).
 - `MARKETS_DATA_PROVIDER` selects candle/fundamentals provider: `yfinance` (default), `stooq`, or `alpha_vantage`.
+- `YFINANCE_FALLBACK_TO_STOOQ_ENABLED` controls whether `yfinance` candle failures fall back to Stooq (default: `true`).
 - `ALPHA_VANTAGE_API_KEY` is required when `MARKETS_DATA_PROVIDER=alpha_vantage`.

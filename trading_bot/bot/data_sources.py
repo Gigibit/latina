@@ -196,8 +196,14 @@ def get_candle_history(symbol: str, candle_size: str = "1d", lookback_candles: i
         providers_chain = ["stooq"]
         if _is_env_flag_enabled("STOOQ_FALLBACK_TO_YFINANCE_ENABLED", default=False):
             providers_chain.append("yfinance")
+    elif provider == "alpha_vantage":
+        return _get_alpha_vantage_candle_history(
+            symbol=symbol,
+            candle_size=candle_size,
+            lookback_candles=lookback_candles,
+        )
     else:
-        raise ValueError("MARKETS_DATA_PROVIDER must be one of: yfinance, stooq")
+        raise ValueError("MARKETS_DATA_PROVIDER must be one of: yfinance, stooq, alpha_vantage")
 
     logger.info(
         "Candle history request symbol=%s candle_size=%s lookback=%s providers_chain=%s",
@@ -244,14 +250,8 @@ def get_candle_history(symbol: str, candle_size: str = "1d", lookback_candles: i
 
     if last_exception is not None:
         raise last_exception
-    if provider == "alpha_vantage":
-        return _get_alpha_vantage_candle_history(
-            symbol=symbol,
-            candle_size=candle_size,
-            lookback_candles=lookback_candles,
-        )
 
-    raise ValueError("MARKETS_DATA_PROVIDER must be one of: yfinance, stooq, alpha_vantage")
+    raise RuntimeError("Unable to fetch candle history from configured providers.")
 
 
 def _get_yfinance_candle_history(
@@ -317,16 +317,43 @@ def _get_stooq_candle_history(symbol: str, candle_size: str = "1d", lookback_can
 
     stooq_timeout_seconds = _get_env_int("STOOQ_CR_TIMEOUT", default=8)
 
-    try:
-        with urlopen(request, timeout=stooq_timeout_seconds) as response:
-            csv_payload = response.read().decode("utf-8")
-    except (HTTPError, URLError, TimeoutError) as exc:
-        logger.warning(
-            "External response service=stooq endpoint=history symbol=%s error=%s",
+    retry_enabled = _is_env_flag_enabled("RETRY_BACKOFFF_ENABLED", default=True)
+    max_attempts = 3 if retry_enabled else 1
+
+    csv_payload = ""
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        logger.info(
+            "External request service=stooq endpoint=history symbol=%s attempt=%s/%s",
             stooq_symbol,
-            exc,
+            attempt,
+            max_attempts,
         )
-        raise RuntimeError("Unable to fetch candles from Stooq.") from exc
+        try:
+            with urlopen(request, timeout=stooq_timeout_seconds) as response:
+                csv_payload = response.read().decode("utf-8")
+            break
+        except (HTTPError, URLError, TimeoutError) as exc:
+            last_error = exc
+            should_retry = retry_enabled and attempt < max_attempts
+            logger.warning(
+                "External response service=stooq endpoint=history symbol=%s "
+                "error=%s retry=%s",
+                stooq_symbol,
+                exc,
+                should_retry,
+            )
+            if should_retry:
+                _sleep_with_exponential_backoff(attempt)
+                continue
+            raise RuntimeError(
+                "Unable to fetch candles from Stooq. "
+                "If you are using MARKETS_DATA_PROVIDER=yfinance, you can disable fallback "
+                "with YFINANCE_FALLBACK_TO_STOOQ_ENABLED=false."
+            ) from exc
+
+    if not csv_payload and last_error is not None:
+        raise RuntimeError("Unable to fetch candles from Stooq.") from last_error
 
     logger.info(
         "External response service=stooq endpoint=history symbol=%s bytes=%s",
