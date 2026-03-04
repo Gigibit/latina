@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import ssl
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -196,8 +197,14 @@ def get_candle_history(symbol: str, candle_size: str = "1d", lookback_candles: i
         providers_chain = ["stooq"]
         if _is_env_flag_enabled("STOOQ_FALLBACK_TO_YFINANCE_ENABLED", default=False):
             providers_chain.append("yfinance")
+    elif provider == "alpha_vantage":
+        return _get_alpha_vantage_candle_history(
+            symbol=symbol,
+            candle_size=candle_size,
+            lookback_candles=lookback_candles,
+        )
     else:
-        raise ValueError("MARKETS_DATA_PROVIDER must be one of: yfinance, stooq")
+        raise ValueError("MARKETS_DATA_PROVIDER must be one of: yfinance, stooq, alpha_vantage")
 
     logger.info(
         "Candle history request symbol=%s candle_size=%s lookback=%s providers_chain=%s",
@@ -244,14 +251,8 @@ def get_candle_history(symbol: str, candle_size: str = "1d", lookback_candles: i
 
     if last_exception is not None:
         raise last_exception
-    if provider == "alpha_vantage":
-        return _get_alpha_vantage_candle_history(
-            symbol=symbol,
-            candle_size=candle_size,
-            lookback_candles=lookback_candles,
-        )
 
-    raise ValueError("MARKETS_DATA_PROVIDER must be one of: yfinance, stooq, alpha_vantage")
+    raise RuntimeError("Unable to fetch candle history.")
 
 
 def _get_yfinance_candle_history(
@@ -316,17 +317,52 @@ def _get_stooq_candle_history(symbol: str, candle_size: str = "1d", lookback_can
     )
 
     stooq_timeout_seconds = _get_env_int("STOOQ_CR_TIMEOUT", default=8)
+    retry_enabled = _is_env_flag_enabled("RETRY_BACKOFFF_ENABLED", default=True)
+    max_attempts = 3 if retry_enabled else 1
 
-    try:
-        with urlopen(request, timeout=stooq_timeout_seconds) as response:
-            csv_payload = response.read().decode("utf-8")
-    except (HTTPError, URLError, TimeoutError) as exc:
-        logger.warning(
-            "External response service=stooq endpoint=history symbol=%s error=%s",
-            stooq_symbol,
-            exc,
-        )
-        raise RuntimeError("Unable to fetch candles from Stooq.") from exc
+    csv_payload: str | None = None
+    last_error: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with urlopen(request, timeout=stooq_timeout_seconds) as response:
+                csv_payload = response.read().decode("utf-8")
+            break
+        except HTTPError as exc:
+            last_error = exc
+            should_retry = retry_enabled and exc.code >= 500 and attempt < max_attempts
+            logger.warning(
+                "External response service=stooq endpoint=history symbol=%s "
+                "status=%s retry=%s attempt=%s/%s",
+                stooq_symbol,
+                exc.code,
+                should_retry,
+                attempt,
+                max_attempts,
+            )
+        except (URLError, TimeoutError, ssl.SSLError) as exc:
+            last_error = exc
+            should_retry = (
+                retry_enabled
+                and _is_transient_network_error(exc)
+                and attempt < max_attempts
+            )
+            logger.warning(
+                "External response service=stooq endpoint=history symbol=%s "
+                "error=%s retry=%s attempt=%s/%s",
+                stooq_symbol,
+                exc,
+                should_retry,
+                attempt,
+                max_attempts,
+            )
+
+        if should_retry:
+            _sleep_with_exponential_backoff(attempt)
+            continue
+        raise RuntimeError("Unable to fetch candles from Stooq.") from last_error
+
+    if csv_payload is None:
+        raise RuntimeError("Unable to fetch candles from Stooq.") from last_error
 
     logger.info(
         "External response service=stooq endpoint=history symbol=%s bytes=%s",
@@ -347,6 +383,34 @@ def _get_stooq_candle_history(symbol: str, candle_size: str = "1d", lookback_can
         raise ValueError(f"Not enough data found for symbol '{symbol}'.")
 
     return frame
+
+
+def _is_transient_network_error(exc: Exception) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    if isinstance(exc, ssl.SSLError):
+        return True
+    if isinstance(exc, URLError):
+        reason = exc.reason
+        if isinstance(reason, TimeoutError | ssl.SSLError):
+            return True
+        if isinstance(reason, str):
+            lowered_reason = reason.lower()
+            if (
+                "timed out" in lowered_reason
+                or "unexpected eof" in lowered_reason
+                or "unexpected_eof" in lowered_reason
+                or "eof occurred" in lowered_reason
+            ):
+                return True
+
+    lowered_error = str(exc).lower()
+    return (
+        "timed out" in lowered_error
+        or "unexpected eof" in lowered_error
+        or "unexpected_eof" in lowered_error
+        or "eof occurred" in lowered_error
+    )
 
 
 def _normalize_stooq_symbol(symbol: str) -> str:
