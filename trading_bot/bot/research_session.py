@@ -7,7 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, Callable
 
 from trading_bot.bot.data_sources import (
     fetch_trending_symbols,
@@ -18,6 +18,10 @@ from trading_bot.bot.llm import LLMDecider
 from trading_bot.bot.service import generate_suggestion
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_RATE_LIMIT_MAX_ATTEMPTS = 8
+DEFAULT_RATE_LIMIT_BASE_BACKOFF_SECONDS = 2.0
+MAX_RATE_LIMIT_BACKOFF_SECONDS = 60.0
 
 
 def _build_summary_decider() -> LLMDecider:
@@ -56,6 +60,52 @@ def _summarize_result_with_llm(payload: dict[str, Any]) -> str:
         f"- Action: {action} (confidence: {confidence})\n"
         f"- Risk notes: {risk_notes}"
     )
+
+
+def _is_rate_limited_exception(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "too many requests" in message or "rate limit" in message
+
+
+def _rate_limit_backoff_seconds(attempt: int) -> float:
+    base_delay = float(
+        os.getenv(
+            "SUGGESTION_RATE_LIMIT_BACKOFF_BASE_SECONDS",
+            str(DEFAULT_RATE_LIMIT_BASE_BACKOFF_SECONDS),
+        )
+    )
+    backoff = base_delay * (2 ** max(attempt - 1, 0))
+    return min(backoff, MAX_RATE_LIMIT_BACKOFF_SECONDS)
+
+
+def _suggestion_with_retry(
+    symbol: str,
+    risk_profile: str,
+    log_callback: Callable[[str], None],
+) -> dict[str, Any]:
+    max_attempts = int(
+        os.getenv("SUGGESTION_RATE_LIMIT_MAX_ATTEMPTS", str(DEFAULT_RATE_LIMIT_MAX_ATTEMPTS))
+    )
+    max_attempts = max(max_attempts, 1)
+
+    attempt = 1
+    while True:
+        try:
+            return generate_suggestion(symbol=symbol, user_risk_profile=risk_profile)
+        except Exception as exc:
+            if (not _is_rate_limited_exception(exc)) or attempt >= max_attempts:
+                raise
+
+            delay = _rate_limit_backoff_seconds(attempt)
+            log_callback(
+                (
+                    "Suggestion model rate limited "
+                    f"(attempt {attempt}/{max_attempts}). "
+                    f"Retrying in {delay:.1f}s."
+                )
+            )
+            time.sleep(delay)
+            attempt += 1
 
 
 @dataclass
@@ -148,7 +198,11 @@ class ResearchSessionStore:
                 job.session_id,
                 symbol,
             )
-            result = generate_suggestion(symbol=symbol, user_risk_profile=job.risk_profile)
+            result = _suggestion_with_retry(
+                symbol=symbol,
+                risk_profile=job.risk_profile,
+                log_callback=lambda message: self._append_log(job, message),
+            )
             logger.info(
                 "Research workload suggestion generated session_id=%s symbol=%s decision=%s",
                 job.session_id,
