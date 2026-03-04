@@ -244,7 +244,6 @@ def get_candle_history(symbol: str, candle_size: str = "1d", lookback_candles: i
 
     if last_exception is not None:
         raise last_exception
-    raise RuntimeError("Unable to fetch candle history from configured providers.")
     if provider == "alpha_vantage":
         return _get_alpha_vantage_candle_history(
             symbol=symbol,
