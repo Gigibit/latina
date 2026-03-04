@@ -266,8 +266,10 @@ def _get_stooq_candle_history(symbol: str, candle_size: str = "1d", lookback_can
         csv_url,
     )
 
+    stooq_timeout_seconds = _get_env_int("STOOQ_CR_TIMEOUT", default=8)
+
     try:
-        with urlopen(request, timeout=8) as response:
+        with urlopen(request, timeout=stooq_timeout_seconds) as response:
             csv_payload = response.read().decode("utf-8")
     except (HTTPError, URLError, TimeoutError) as exc:
         logger.warning(

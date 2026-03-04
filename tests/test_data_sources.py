@@ -136,6 +136,27 @@ def test_get_candle_history_stooq_provider(monkeypatch):
     assert "s=aapl.us" in captured["url"]
 
 
+
+
+def test_get_candle_history_stooq_uses_env_timeout(monkeypatch):
+    csv_payload = """Date,Open,High,Low,Close,Volume
+2024-01-02,10,11,9,10.5,100
+"""
+
+    captured = {"timeout": None}
+
+    def fake_urlopen(request, timeout):
+        captured["timeout"] = timeout
+        return _DummyCsvResponse(csv_payload)
+
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "stooq")
+    monkeypatch.setenv("STOOQ_CR_TIMEOUT", "10800")
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    data_sources.get_candle_history(symbol="AAPL", candle_size="1d", lookback_candles=1)
+
+    assert captured["timeout"] == 10800
+
 def test_get_candle_history_rejects_unknown_provider(monkeypatch):
     monkeypatch.setenv("MARKETS_DATA_PROVIDER", "unknown")
 
