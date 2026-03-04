@@ -103,6 +103,15 @@ button {
   box-shadow: 0 0 0 1px rgb(59 130 246 / 20%);
 }
 
+[data-modal-close] {
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+  font-size: 1.35rem;
+  line-height: 1;
+  padding: 0.5rem;
+  border-radius: 999px;
+}
+
 
 .projection-candidate-name {
   font-weight: 700;
