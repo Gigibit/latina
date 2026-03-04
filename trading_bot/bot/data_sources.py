@@ -359,7 +359,13 @@ def _get_stooq_candle_history(symbol: str, candle_size: str = "1d", lookback_can
         if should_retry:
             _sleep_with_exponential_backoff(attempt)
             continue
-        raise RuntimeError("Unable to fetch candles from Stooq.") from last_error
+        message = "Unable to fetch candles from Stooq."
+        if os.getenv("MARKETS_DATA_PROVIDER", "").strip().lower() == "yfinance":
+            message += (
+                " If you are using MARKETS_DATA_PROVIDER=yfinance, you can disable fallback "
+                "with YFINANCE_FALLBACK_TO_STOOQ_ENABLED=false."
+            )
+        raise RuntimeError(message) from last_error
 
     if csv_payload is None:
         raise RuntimeError("Unable to fetch candles from Stooq.") from last_error
