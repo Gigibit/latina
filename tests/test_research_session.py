@@ -372,3 +372,91 @@ def test_best_projection_view_returns_chart_payload(monkeypatch):
     assert '"candle_rag_granularity_size": "1h"' in content
     assert '"predicted_granularity_closes":' in content
 
+
+
+def test_research_job_retries_on_rate_limit_and_completes(monkeypatch):
+    monkeypatch.setenv("SUGGESTION_RATE_LIMIT_MAX_ATTEMPTS", "3")
+
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.fetch_trending_symbols",
+        lambda limit: ["AAA"],
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.get_market_snapshot",
+        lambda symbol: SimpleNamespace(
+            symbol=symbol,
+            latest_volume=200.0,
+            avg_volume_20d=100.0,
+            pct_change_5d=2.0,
+        ),
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.fetch_x_sentiment_scores",
+        lambda symbol, days: {day: 0.2 for day in days},
+    )
+
+    calls = {"count": 0}
+
+    def _generate(symbol, user_risk_profile):
+        calls["count"] += 1
+        if calls["count"] < 3:
+            raise RuntimeError("Too Many Requests. Rate limited. Try after a while.")
+        return {
+            "symbol": symbol,
+            "decision": {
+                "action": "BUY",
+                "confidence": 80,
+                "risk_notes": "ok",
+            },
+        }
+
+    monkeypatch.setattr("trading_bot.bot.research_session.generate_suggestion", _generate)
+    monkeypatch.setattr("trading_bot.bot.research_session.time.sleep", lambda _: None)
+
+    store = ResearchSessionStore()
+    job = ResearchJob(session_id="s-retry", risk_profile="medium")
+
+    store._run_job(job)
+
+    assert calls["count"] == 3
+    assert job.status == "completed"
+    assert job.result is not None
+    assert any("Suggestion model rate limited" in line for line in job.stream_log)
+
+
+def test_research_job_fails_when_rate_limit_retries_exhausted(monkeypatch):
+    monkeypatch.setenv("SUGGESTION_RATE_LIMIT_MAX_ATTEMPTS", "2")
+
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.fetch_trending_symbols",
+        lambda limit: ["AAA"],
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.get_market_snapshot",
+        lambda symbol: SimpleNamespace(
+            symbol=symbol,
+            latest_volume=200.0,
+            avg_volume_20d=100.0,
+            pct_change_5d=2.0,
+        ),
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.fetch_x_sentiment_scores",
+        lambda symbol, days: {day: 0.2 for day in days},
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.generate_suggestion",
+        lambda symbol, user_risk_profile: (_ for _ in ()).throw(
+            RuntimeError("Too Many Requests. Rate limited. Try after a while.")
+        ),
+    )
+    monkeypatch.setattr("trading_bot.bot.research_session.time.sleep", lambda _: None)
+
+    store = ResearchSessionStore()
+    job = ResearchJob(session_id="s-retry-fail", risk_profile="medium")
+
+    store._run_job(job)
+
+    assert job.status == "failed"
+    assert job.error is not None
+    assert "Too Many Requests" in job.error
