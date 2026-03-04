@@ -4,6 +4,40 @@ const suggestionForm = document.getElementById('suggestion-form');
 const suggestionOutput = document.getElementById('suggestion-output');
 const appShell = document.querySelector('.app-shell');
 const manualSymbolInputEnabled = appShell?.dataset.manualSymbolInputEnabled === 'true';
+const feedbackModal = document.querySelector('[data-feedback-modal]');
+
+function closeFeedbackModal() {
+  if (!feedbackModal) {
+    return;
+  }
+
+  if (typeof feedbackModal.close === 'function') {
+    feedbackModal.close();
+    return;
+  }
+
+  feedbackModal.classList.remove('is-open');
+  feedbackModal.setAttribute('aria-hidden', 'true');
+}
+
+if (feedbackModal) {
+  feedbackModal.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    const feedbackButton = target.closest('[data-feedback-value]');
+    if (feedbackButton) {
+      closeFeedbackModal();
+      return;
+    }
+
+    if (target.closest('[data-modal-close]')) {
+      closeFeedbackModal();
+    }
+  });
+}
 
 function showSection(target) {
   sections.forEach((section) => {
