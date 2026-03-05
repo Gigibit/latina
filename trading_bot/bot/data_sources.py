@@ -54,6 +54,15 @@ class MacroIndicator:
     delta: float
 
 
+@dataclass
+class CryptoTicker:
+    symbol: str
+    last_price: float
+    change_pct_24h: float
+    volume_base: float
+    volume_quote: float
+
+
 def fetch_trending_symbols(region: str = "US", limit: int = 10) -> list[str]:
     requested_count = _get_env_int("TRENDING_CANDIDATES_SEARCH_NUMBER", default=max(limit, 1))
     api_url = (
@@ -734,6 +743,72 @@ def fetch_market_news(limit: int = 5) -> list[dict[str, str]]:
             if len(headlines) >= max(limit, 1):
                 return headlines
     return headlines[: max(limit, 1)]
+
+
+def fetch_crypto_market_analysis(limit: int = 5) -> dict | None:
+    api_key = os.getenv("BINANCE_CRYPTO_API_KEY", "").strip()
+    if not api_key:
+        return None
+
+    provider = os.getenv("CRYPTO_MARKET_PROVIDER", "binance").strip().lower()
+    if provider != "binance":
+        raise ValueError("CRYPTO_MARKET_PROVIDER must be set to 'binance'.")
+
+    raw_symbols = os.getenv("CRYPTO_MARKET_SYMBOLS", "BTCUSDT,ETHUSDT,BNBUSDT")
+    symbols = [item.strip().upper() for item in raw_symbols.split(",") if item.strip()]
+    symbols = symbols[: max(limit, 1)]
+    if not symbols:
+        raise ValueError("CRYPTO_MARKET_SYMBOLS must include at least one symbol.")
+
+    tickers: list[CryptoTicker] = []
+    headers = {"User-Agent": "Mozilla/5.0", "X-MBX-APIKEY": api_key}
+    for symbol in symbols:
+        api_url = (
+            "https://api.binance.com/api/v3/ticker/24hr"
+            f"?symbol={quote_plus(symbol)}"
+        )
+        request = Request(api_url, headers=headers)
+        logger.info(
+            "External request service=binance endpoint=ticker_24h symbol=%s",
+            symbol,
+        )
+        try:
+            with urlopen(request, timeout=8) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (HTTPError, URLError, TimeoutError) as exc:
+            logger.warning(
+                "External response service=binance endpoint=ticker_24h symbol=%s error=%s",
+                symbol,
+                exc,
+            )
+            continue
+
+        tickers.append(
+            CryptoTicker(
+                symbol=symbol,
+                last_price=float(payload.get("lastPrice", 0.0)),
+                change_pct_24h=float(payload.get("priceChangePercent", 0.0)),
+                volume_base=float(payload.get("volume", 0.0)),
+                volume_quote=float(payload.get("quoteVolume", 0.0)),
+            )
+        )
+
+    if not tickers:
+        raise RuntimeError("Unable to fetch crypto market data from Binance.")
+
+    sorted_by_perf = sorted(tickers, key=lambda ticker: ticker.change_pct_24h, reverse=True)
+    avg_change = mean(item.change_pct_24h for item in tickers)
+    total_quote_volume = sum(item.volume_quote for item in tickers)
+    return {
+        "provider": provider,
+        "experimental": True,
+        "symbols": [item.symbol for item in tickers],
+        "avg_change_pct_24h": round(avg_change, 4),
+        "total_quote_volume_24h": round(total_quote_volume, 2),
+        "top_gainer": sorted_by_perf[0].__dict__,
+        "top_loser": sorted_by_perf[-1].__dict__,
+        "tickers": [item.__dict__ for item in sorted_by_perf],
+    }
 
 
 def average_macro_delta(indicators: list[MacroIndicator]) -> float:

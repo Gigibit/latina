@@ -348,3 +348,52 @@ def test_fetch_fundamental_metrics_alpha_vantage_provider(monkeypatch):
     assert metrics.eps == 4.2
     assert metrics.debt_to_equity == 1.1
     assert metrics.market_cap == 1000000000.0
+
+
+def test_fetch_crypto_market_analysis_returns_none_without_api_key(monkeypatch):
+    monkeypatch.delenv("BINANCE_CRYPTO_API_KEY", raising=False)
+
+    assert data_sources.fetch_crypto_market_analysis(limit=2) is None
+
+
+def test_fetch_crypto_market_analysis_rejects_non_binance_provider(monkeypatch):
+    monkeypatch.setenv("BINANCE_CRYPTO_API_KEY", "secret")
+    monkeypatch.setenv("CRYPTO_MARKET_PROVIDER", "coinbase")
+
+    with pytest.raises(ValueError, match="CRYPTO_MARKET_PROVIDER"):
+        data_sources.fetch_crypto_market_analysis(limit=1)
+
+
+def test_fetch_crypto_market_analysis_with_binance(monkeypatch):
+    payloads = {
+        "BTCUSDT": {
+            "lastPrice": "68000",
+            "priceChangePercent": "3.2",
+            "volume": "100",
+            "quoteVolume": "6800000",
+        },
+        "ETHUSDT": {
+            "lastPrice": "3500",
+            "priceChangePercent": "-1.5",
+            "volume": "200",
+            "quoteVolume": "700000",
+        },
+    }
+
+    def fake_urlopen(request, timeout):
+        symbol = request.full_url.split("symbol=", maxsplit=1)[1]
+        return _DummyResponse(payloads[symbol])
+
+    monkeypatch.setenv("BINANCE_CRYPTO_API_KEY", "secret")
+    monkeypatch.setenv("CRYPTO_MARKET_PROVIDER", "binance")
+    monkeypatch.setenv("CRYPTO_MARKET_SYMBOLS", "BTCUSDT,ETHUSDT")
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    result = data_sources.fetch_crypto_market_analysis(limit=2)
+
+    assert result is not None
+    assert result["provider"] == "binance"
+    assert result["experimental"] is True
+    assert result["top_gainer"]["symbol"] == "BTCUSDT"
+    assert result["top_loser"]["symbol"] == "ETHUSDT"
+    assert len(result["tickers"]) == 2

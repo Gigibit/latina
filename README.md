@@ -2,6 +2,7 @@
 
 Simple Django API that provides **BUY / SELL / HOLD** suggestions using:
 - Multi-source market data (Yahoo Finance/Stooq candles, FRED macro data, market RSS news)
+- Experimental crypto market analysis via Binance (enabled only when `BINANCE_CRYPTO_API_KEY` is set)
 - Technical analysis (SMA, RSI, MACD, Bollinger Bands)
 - Fundamental metrics (P/E, EPS, debt/equity, market cap)
 - Local embeddings retrieval (`sentence-transformers`)
@@ -31,7 +32,7 @@ python manage.py runserver
 
 - `GET /api/suggestion/?risk=medium` (async by default; symbol selection is system-managed via web scraping + sentiment)
 - `GET /api/candidates/?limit=5&risk=medium`
-- `GET /api/market-monitor/?limit=5`
+- `GET /api/market-monitor/?limit=5` (includes optional experimental `crypto_market` block)
 
 Example response (`/api/suggestion/`, once async research is completed):
 
@@ -100,3 +101,7 @@ When action is `HOLD`, the API call is skipped and cooldown still gets updated i
 - `TRENDING_CANDIDATES_SEARCH_NUMBER` controls Yahoo Finance trending query size via `?count=` (default: `10`).
 - `MARKETS_DATA_PROVIDER` selects candle/fundamentals provider: `yfinance` (default), `stooq`, or `alpha_vantage`.
 - `ALPHA_VANTAGE_API_KEY` is required when `MARKETS_DATA_PROVIDER=alpha_vantage`.
+
+- `BINANCE_CRYPTO_API_KEY` enables experimental crypto market analysis in `/api/market-monitor/`.
+- `CRYPTO_MARKET_PROVIDER` currently accepts only `binance` (default: `binance`).
+- `CRYPTO_MARKET_SYMBOLS` comma-separated Binance symbols to evaluate (default: `BTCUSDT,ETHUSDT,BNBUSDT`).
