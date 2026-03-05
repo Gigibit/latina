@@ -7,6 +7,7 @@ from statistics import mean
 from trading_bot.bot.data_sources import (
     average_macro_delta,
     compute_technical_indicators,
+    fetch_crypto_market_analysis,
     fetch_fundamental_metrics,
     fetch_macro_indicators,
     fetch_market_news,
@@ -509,6 +510,7 @@ def get_best_candidates(limit: int = 5, user_risk_profile: str = "medium") -> di
 def get_market_monitor(limit: int = 5) -> dict:
     news = fetch_market_news(limit=limit)
     macro = fetch_macro_indicators()
+    crypto_market = fetch_crypto_market_analysis(limit=limit)
     macro_volatility = average_macro_delta(macro)
     alerts: list[str] = []
 
@@ -516,6 +518,11 @@ def get_market_monitor(limit: int = 5) -> dict:
         alerts.append("Elevata volatilità macroeconomica rilevata.")
     if any(abs(item.delta) > 0.25 for item in macro):
         alerts.append("Sono presenti variazioni macro significative nelle ultime rilevazioni.")
+    if crypto_market:
+        alerts.append(
+            "Crypto market analysis sperimentale attiva tramite Binance "
+            "(BINANCE_CRYPTO_API_KEY configurata)."
+        )
     if not alerts:
         alerts.append("Nessun alert macro significativo al momento.")
 
@@ -524,6 +531,7 @@ def get_market_monitor(limit: int = 5) -> dict:
         "macro_indicators": [item.__dict__ for item in macro],
         "news": news,
         "news_count": len(news),
+        "crypto_market": crypto_market,
         "market_regime": "risk_off" if macro_volatility > 0.5 else "neutral",
         "headline_sentiment_proxy": round(mean([0.0 for _ in news]) if news else 0.0, 4),
     }

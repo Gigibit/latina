@@ -294,11 +294,52 @@ def test_get_market_monitor(monkeypatch):
             )
         ],
     )
+    monkeypatch.setattr("trading_bot.bot.service.fetch_crypto_market_analysis", lambda limit: None)
 
     result = get_market_monitor(limit=3)
     assert result["news_count"] == 1
     assert result["market_regime"] == "risk_off"
     assert result["alerts"]
+    assert result["crypto_market"] is None
+
+
+def test_get_market_monitor_with_crypto_experimental_feature(monkeypatch):
+    monkeypatch.setattr(
+        "trading_bot.bot.service.fetch_market_news",
+        lambda limit: [{"title": "Fed decision", "link": "https://example.com/news"}],
+    )
+    monkeypatch.setattr("trading_bot.bot.service.fetch_macro_indicators", lambda: [])
+    monkeypatch.setattr(
+        "trading_bot.bot.service.fetch_crypto_market_analysis",
+        lambda limit: {
+            "provider": "binance",
+            "experimental": True,
+            "symbols": ["BTCUSDT"],
+            "avg_change_pct_24h": 1.25,
+            "total_quote_volume_24h": 100.0,
+            "top_gainer": {
+                "symbol": "BTCUSDT",
+                "last_price": 68000.0,
+                "change_pct_24h": 1.25,
+                "volume_base": 150.0,
+                "volume_quote": 100.0,
+            },
+            "top_loser": {
+                "symbol": "BTCUSDT",
+                "last_price": 68000.0,
+                "change_pct_24h": 1.25,
+                "volume_base": 150.0,
+                "volume_quote": 100.0,
+            },
+            "tickers": [],
+        },
+    )
+
+    result = get_market_monitor(limit=3)
+
+    assert result["crypto_market"]["provider"] == "binance"
+    assert result["crypto_market"]["experimental"] is True
+    assert any("sperimentale" in alert.lower() for alert in result["alerts"])
 
 def test_generate_suggestion_requires_granularity_for_introspective_mode(monkeypatch):
     monkeypatch.setenv("CHUNKIZATION_MODE", "INTROSPECTIVE_CANDLE")
