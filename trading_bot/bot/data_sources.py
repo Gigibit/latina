@@ -690,7 +690,16 @@ def fetch_macro_indicators() -> list[MacroIndicator]:
     }
     indicators: list[MacroIndicator] = []
     for series_name, fred_code in series_codes.items():
-        values = _fetch_fred_series(fred_code)
+        try:
+            values = _fetch_fred_series(fred_code)
+        except RuntimeError as exc:
+            logger.warning(
+                "Skipping macro indicator series=%s code=%s error=%s",
+                series_name,
+                fred_code,
+                exc,
+            )
+            continue
         if len(values) < 2:
             continue
         latest, previous = values[-1], values[-2]
