@@ -53,6 +53,7 @@ class ThresholdPromptDecider:
         assert "If buy_probability - sell_probability >= 0.12 choose BUY." in prompt
         assert "If sell_probability - buy_probability >= 0.12 choose SELL." in prompt
         assert "Else choose HOLD." in prompt
+        assert "pump rumors" not in prompt.lower()
 
         if buy_probability - sell_probability >= 0.12:
             action = "BUY"
@@ -202,6 +203,12 @@ def test_generate_suggestion_imbalanced_probabilities_do_not_default_to_hold(mon
     assert result["buy_probability"] >= 0.7
     assert result["sell_probability"] <= 0.3
     assert result["decision"]["action"] == "BUY"
+
+
+def test_llm_system_prompt_excludes_pump_rumors():
+    from trading_bot.bot import llm
+
+    assert "Exclude pump rumors" in llm.SYSTEM_PROMPT
 
 
 def test_get_best_candidates_ranks_by_score(monkeypatch):
