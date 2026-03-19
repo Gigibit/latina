@@ -4,7 +4,7 @@ import logging
 import os
 from datetime import timedelta
 
-from django.http import HttpResponseServerError, JsonResponse
+from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_GET
 
@@ -19,31 +19,20 @@ def _auto_detection_symbol_number() -> int:
     raw_value = os.getenv("AUTO_DETECTION_SYMBOL_NUMBER", "7").strip()
     if raw_value.lower() in {"false", "off", "no"}:
         return 0
-    try:
-        return max(int(raw_value), 0)
-    except ValueError:
-        logger.error(
-            "Invalid AUTO_DETECTION_SYMBOL_NUMBER=%s. Falling back to 7.",
-            raw_value,
-        )
-        return 7
+    return max(int(raw_value), 0)
 
 
 @require_GET
 def dashboard_view(request):
-    try:
-        auto_detection_symbol_number = _auto_detection_symbol_number()
-        return render(
-            request,
-            "bot/dashboard.html",
-            {
-                "auto_detection_symbol_number": auto_detection_symbol_number,
-                "manual_symbol_input_enabled": auto_detection_symbol_number == 0,
-            },
-        )
-    except Exception as exc:
-        logger.error("Response dashboard_view status=500 error=%s", exc, exc_info=True)
-        return HttpResponseServerError("Unable to render dashboard.")
+    auto_detection_symbol_number = _auto_detection_symbol_number()
+    return render(
+        request,
+        "bot/dashboard.html",
+        {
+            "auto_detection_symbol_number": auto_detection_symbol_number,
+            "manual_symbol_input_enabled": auto_detection_symbol_number == 0,
+        },
+    )
 
 
 @require_GET
@@ -77,7 +66,7 @@ def trading_suggestion_view(request):
             if status_only:
                 job = research_sessions.get(session_id)
                 if not job:
-                    logger.error(
+                    logger.warning(
                         "Response trading_suggestion_view status=404 "
                         "reason=unknown_research_session session_id=%s",
                         session_id,
@@ -125,7 +114,7 @@ def trading_suggestion_view(request):
         )
         return JsonResponse(payload)
     except Exception as exc:
-        logger.error("Response trading_suggestion_view status=400 error=%s", exc, exc_info=True)
+        logger.exception("Response trading_suggestion_view status=400 error=%s", exc)
         return JsonResponse({"error": str(exc)}, status=400)
 
 
@@ -148,7 +137,7 @@ def best_candidates_view(request):
         )
         return JsonResponse(payload)
     except Exception as exc:
-        logger.error("Response best_candidates_view status=400 error=%s", exc, exc_info=True)
+        logger.exception("Response best_candidates_view status=400 error=%s", exc)
         return JsonResponse({"error": str(exc)}, status=400)
 
 
@@ -165,7 +154,7 @@ def market_monitor_view(request):
         )
         return JsonResponse(payload)
     except Exception as exc:
-        logger.error("Response market_monitor_view status=400 error=%s", exc, exc_info=True)
+        logger.exception("Response market_monitor_view status=400 error=%s", exc)
         return JsonResponse({"error": str(exc)}, status=400)
 
 
@@ -245,5 +234,5 @@ def best_projection_view(request):
             }
         )
     except Exception as exc:
-        logger.error("Response best_projection_view status=400 error=%s", exc, exc_info=True)
+        logger.exception("Response best_projection_view status=400 error=%s", exc)
         return JsonResponse({"error": str(exc)}, status=400)
