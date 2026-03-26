@@ -92,6 +92,28 @@
       <svg id="projections-chart" class="card projection-chart" viewBox="0 0 1000 320" role="img" aria-label="Projection chart"></svg>
       <pre id="projections-output" class="card output"></pre>
     </section>
+
+    <section id="section-playground" class="section" data-section="playground">
+      <h2>Playground</h2>
+      <form id="playground-form" class="card form-grid">
+        <label>Symbol
+          <input name="symbol" type="text" value="AAPL" required />
+        </label>
+        <label>Date
+          <input name="date" type="date" required />
+        </label>
+        <label>Size
+          <select name="size">
+            <option value="1h">1h</option>
+            <option value="1d" selected>1d</option>
+            <option value="1w">1w</option>
+            <option value="1M">1M</option>
+          </select>
+        </label>
+        <button type="submit">Build sequence</button>
+      </form>
+      <pre id="playground-output" class="card output"></pre>
+    </section>
   </main>
 
   <nav class="bottom-nav" aria-label="Main sections">
@@ -99,6 +121,7 @@
     <button type="button" class="nav-item" data-target="candidates">🎯</button>
     <button type="button" class="nav-item" data-target="monitor">📈</button>
     <button type="button" class="nav-item" data-target="projections">🔮</button>
+    <button type="button" class="nav-item" data-target="playground">🧪</button>
   </nav>
 
   <script src="/static/bot/app.js"></script>
