@@ -3,7 +3,11 @@ from types import SimpleNamespace
 from django.test import RequestFactory
 
 from trading_bot.bot.research_session import ResearchJob, ResearchSessionStore
-from trading_bot.bot.views import best_projection_view, trading_suggestion_view
+from trading_bot.bot.views import (
+    best_projection_view,
+    candle_playground_view,
+    trading_suggestion_view,
+)
 
 
 def test_research_job_applies_acceptance_threshold(monkeypatch):
@@ -371,6 +375,45 @@ def test_best_projection_view_returns_chart_payload(monkeypatch):
     assert '"candidate_name": "AAA"' in content
     assert '"candle_rag_granularity_size": "1h"' in content
     assert '"predicted_granularity_closes":' in content
+
+
+def test_candle_playground_view_returns_rg_sequence(monkeypatch):
+    from datetime import date
+
+    class _FakeFrame:
+        def __init__(self):
+            self._rows = [
+                (date(2024, 1, 1), {"Open": 10.0, "Close": 9.0}),
+                (date(2024, 1, 2), {"Open": 8.0, "Close": 8.1}),
+                (date(2024, 1, 3), {"Open": 9.2, "Close": 9.0}),
+            ]
+
+        def iterrows(self):
+            for idx, row in self._rows:
+                yield idx, row
+
+        def __len__(self):
+            return len(self._rows)
+
+    monkeypatch.setattr(
+        "trading_bot.bot.views.get_candle_history",
+        lambda symbol, candle_size, lookback_candles: _FakeFrame(),
+    )
+
+    request = RequestFactory().get("/api/playground/?symbol=AAPL&date=2024-01-02&size=1d")
+    response = candle_playground_view(request)
+
+    assert response.status_code == 200
+    content = response.content.decode("utf-8")
+    assert '"sequence": "GR"' in content
+    assert '"candles_count": 2' in content
+
+
+def test_candle_playground_view_rejects_invalid_size():
+    request = RequestFactory().get("/api/playground/?symbol=AAPL&date=2024-01-02&size=2d")
+    response = candle_playground_view(request)
+    assert response.status_code == 400
+    assert b"size must be one of" in response.content
 
 
 

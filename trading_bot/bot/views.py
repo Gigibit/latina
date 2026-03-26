@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import timedelta
+from datetime import date, timedelta
 
 from django.http import JsonResponse
 from django.shortcuts import render
@@ -235,4 +235,86 @@ def best_projection_view(request):
         )
     except Exception as exc:
         logger.exception("Response best_projection_view status=400 error=%s", exc)
+        return JsonResponse({"error": str(exc)}, status=400)
+
+
+@require_GET
+def candle_playground_view(request):
+    symbol = request.GET.get("symbol", "").strip().upper()
+    requested_date = request.GET.get("date", "").strip()
+    requested_size = request.GET.get("size", "1d").strip()
+    size_mapping = {
+        "1h": "1h",
+        "1d": "1d",
+        "1w": "7d",
+        "1M": "1M",
+    }
+
+    logger.info(
+        "Request candle_playground_view symbol=%s date=%s size=%s",
+        symbol,
+        requested_date,
+        requested_size,
+    )
+
+    try:
+        if not symbol:
+            raise ValueError("symbol is required.")
+        if not requested_date:
+            raise ValueError("date is required (YYYY-MM-DD).")
+        if requested_size not in size_mapping:
+            raise ValueError("size must be one of: 1h, 1d, 1w, 1M.")
+
+        start_date = date.fromisoformat(requested_date)
+        if start_date > date.today():
+            raise ValueError("date cannot be in the future.")
+
+        normalized_size = size_mapping[requested_size]
+        _, candle_span_days = resolve_candle_size(normalized_size)
+        distance_days = max((date.today() - start_date).days, 1)
+        lookback_candles = max(int(distance_days / candle_span_days) + 5, 10)
+
+        history = get_candle_history(
+            symbol=symbol,
+            candle_size=normalized_size,
+            lookback_candles=lookback_candles,
+        )
+
+        sequence: list[str] = []
+        closes_from_date = 0
+        for index, row in history.iterrows():
+            candle_date = index.date() if hasattr(index, "date") else index
+            if candle_date < start_date:
+                continue
+
+            open_price = float(row["Open"])
+            close_price = float(row["Close"])
+            sequence.append("G" if close_price >= open_price else "R")
+            closes_from_date += 1
+
+        if not sequence:
+            raise ValueError("No candle data available from the selected date.")
+
+        payload = {
+            "symbol": symbol,
+            "date": requested_date,
+            "size": requested_size,
+            "sequence": "".join(sequence),
+            "candles_count": closes_from_date,
+        }
+        logger.info(
+            "Response candle_playground_view status=200 symbol=%s candles=%s",
+            symbol,
+            closes_from_date,
+        )
+        return JsonResponse(payload)
+    except Exception as exc:
+        logger.error(
+            "Response candle_playground_view status=400 symbol=%s date=%s size=%s error=%s",
+            symbol,
+            requested_date,
+            requested_size,
+            exc,
+        )
+        logger.exception("candle_playground_view failed")
         return JsonResponse({"error": str(exc)}, status=400)

@@ -2,6 +2,7 @@ const sections = [...document.querySelectorAll('.section')];
 const navItems = [...document.querySelectorAll('.nav-item')];
 const suggestionForm = document.getElementById('suggestion-form');
 const suggestionOutput = document.getElementById('suggestion-output');
+const playgroundForm = document.getElementById('playground-form');
 const appShell = document.querySelector('.app-shell');
 const manualSymbolInputEnabled = appShell?.dataset.manualSymbolInputEnabled === 'true';
 const feedbackModal = document.querySelector('[data-feedback-modal]');
@@ -255,5 +256,19 @@ document.getElementById('projections-form').addEventListener('submit', (event) =
   loadProjection(params);
 });
 
+playgroundForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const params = new URLSearchParams(new FormData(event.target));
+  callApi(`/api/playground/?${params.toString()}`, 'playground-output');
+});
+
+const playgroundDateInput = playgroundForm.querySelector('input[name="date"]');
+if (playgroundDateInput && !playgroundDateInput.value) {
+  const today = new Date();
+  today.setDate(today.getDate() - 14);
+  playgroundDateInput.value = today.toISOString().slice(0, 10);
+}
+
 startSuggestionResearch('medium');
 document.getElementById('projections-form').requestSubmit();
+playgroundForm.requestSubmit();
