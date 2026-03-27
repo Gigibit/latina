@@ -110,6 +110,9 @@
             <option value="1M">1M</option>
           </select>
         </label>
+        <label>History candles limit
+          <input name="history_limit" type="number" min="1" max="10000" value="10000" required />
+        </label>
         <button type="submit">Build sequence</button>
       </form>
       <pre id="playground-output" class="card output"></pre>

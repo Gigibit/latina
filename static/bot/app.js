@@ -259,7 +259,20 @@ document.getElementById('projections-form').addEventListener('submit', (event) =
 playgroundForm.addEventListener('submit', (event) => {
   event.preventDefault();
   const params = new URLSearchParams(new FormData(event.target));
-  callApi(`/api/playground/?${params.toString()}`, 'playground-output');
+  const output = document.getElementById('playground-output');
+  output.textContent = 'Loading...';
+
+  fetch(`/api/playground/?${params.toString()}`)
+    .then(async (response) => {
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data?.error || `Request failed with status ${response.status}`);
+      }
+      output.textContent = (data?.sentiment || '').toString().toUpperCase();
+    })
+    .catch((error) => {
+      output.textContent = `Error: ${error.message}`;
+    });
 });
 
 const playgroundDateInput = playgroundForm.querySelector('input[name="date"]');
