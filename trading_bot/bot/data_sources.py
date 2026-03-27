@@ -225,8 +225,21 @@ def get_candle_history(symbol: str, candle_size: str = "1d", lookback_candles: i
             candle_size=candle_size,
             lookback_candles=lookback_candles,
         )
+    elif provider == "massive":
+        return _get_massive_candle_history(
+            symbol=symbol,
+            candle_size=candle_size,
+            lookback_candles=lookback_candles,
+        )
     else:
-        raise ValueError("MARKETS_DATA_PROVIDER must be one of: yfinance, stooq, alpha_vantage")
+        logger.error(
+            "Candle history invalid provider selection symbol=%s provider=%s",
+            symbol.upper(),
+            provider,
+        )
+        raise ValueError(
+            "MARKETS_DATA_PROVIDER must be one of: yfinance, stooq, alpha_vantage, massive"
+        )
 
     logger.info(
         "Candle history request symbol=%s candle_size=%s lookback=%s providers_chain=%s",
@@ -547,6 +560,103 @@ def _get_alpha_vantage_candle_history(
     return frame
 
 
+def _get_massive_candle_history(
+    symbol: str, candle_size: str = "1d", lookback_candles: int = 180
+):
+    import pandas as pd
+
+    api_key = os.getenv("MASSIVE_API_KEY", "").strip()
+    if not api_key:
+        logger.error(
+            "Massive candle history missing API key symbol=%s provider=massive",
+            symbol.upper(),
+        )
+        raise RuntimeError("MASSIVE_API_KEY is required when MARKETS_DATA_PROVIDER=massive")
+
+    interval, candle_span = resolve_candle_size(candle_size)
+    history_length = max(int(lookback_candles * candle_span) + 5, 60)
+
+    multiplier = 1
+    timespan = "day"
+    if interval == "1h":
+        timespan = "hour"
+    end_date = date.today()
+    start_date = end_date.fromordinal(end_date.toordinal() - history_length)
+    api_url = (
+        "https://api.massive.com/v2/aggs/ticker/"
+        f"{quote_plus(symbol.upper())}/range/{multiplier}/{timespan}/"
+        f"{start_date.isoformat()}/{end_date.isoformat()}"
+        f"?adjusted=true&sort=asc&limit=50000&apiKey={quote_plus(api_key)}"
+    )
+    request = Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
+    logger.info("External request service=massive endpoint=history symbol=%s", symbol.upper())
+
+    try:
+        with urlopen(request, timeout=8) as response:
+            raw_payload = response.read().decode("utf-8")
+    except (HTTPError, URLError, TimeoutError) as exc:
+        logger.error(
+            "External response service=massive endpoint=history symbol=%s error=%s",
+            symbol.upper(),
+            exc,
+        )
+        raise RuntimeError("Unable to fetch candles from Massive.") from exc
+
+    payload = json.loads(raw_payload)
+    results = payload.get("results")
+    if not isinstance(results, list) or not results:
+        logger.error(
+            "External response service=massive endpoint=history symbol=%s missing_results=true",
+            symbol.upper(),
+        )
+        raise ValueError(f"Not enough data found for symbol '{symbol}'.")
+
+    rows: list[dict[str, object]] = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        timestamp = item.get("t")
+        open_value = item.get("o")
+        high_value = item.get("h")
+        low_value = item.get("l")
+        close_value = item.get("c")
+        volume_value = item.get("v")
+        if None in {timestamp, open_value, high_value, low_value, close_value, volume_value}:
+            continue
+        rows.append(
+            {
+                "Date": pd.to_datetime(int(timestamp), unit="ms", utc=True).tz_localize(None),
+                "Open": float(open_value),
+                "High": float(high_value),
+                "Low": float(low_value),
+                "Close": float(close_value),
+                "Volume": float(volume_value),
+            }
+        )
+
+    frame = pd.DataFrame(rows).dropna()
+    if frame.empty:
+        logger.error(
+            "External response service=massive endpoint=history symbol=%s parsed_rows=0",
+            symbol.upper(),
+        )
+        raise ValueError(f"Not enough data found for symbol '{symbol}'.")
+    frame = frame.set_index("Date").sort_index().tail(history_length)
+    if frame.empty:
+        logger.error(
+            "External response service=massive endpoint=history symbol=%s tail_rows=0",
+            symbol.upper(),
+        )
+        raise ValueError(f"Not enough data found for symbol '{symbol}'.")
+
+    logger.info(
+        "External response service=massive endpoint=history symbol=%s rows=%s",
+        symbol.upper(),
+        len(frame),
+    )
+    return frame
+
+
 def fetch_x_sentiment_scores(symbol: str, days: list[date]) -> dict[date, float]:
     """Return sentiment scores for each day in range [-1, 1].
 
@@ -629,8 +739,18 @@ def fetch_fundamental_metrics(symbol: str) -> FundamentalMetrics:
     if provider == "alpha_vantage":
         return _fetch_alpha_vantage_fundamentals(symbol)
 
+    if provider == "massive":
+        return _fetch_massive_fundamentals(symbol)
+
     if provider != "yfinance":
-        raise ValueError("MARKETS_DATA_PROVIDER must be one of: yfinance, stooq, alpha_vantage")
+        logger.error(
+            "Fundamentals invalid provider selection symbol=%s provider=%s",
+            symbol.upper(),
+            provider,
+        )
+        raise ValueError(
+            "MARKETS_DATA_PROVIDER must be one of: yfinance, stooq, alpha_vantage, massive"
+        )
 
     try:
         import yfinance as yf
@@ -702,6 +822,51 @@ def _fetch_alpha_vantage_fundamentals(symbol: str) -> FundamentalMetrics:
         eps=_safe_float(payload.get("EPS")),
         debt_to_equity=_safe_float(payload.get("DebtToEquityRatio")),
         market_cap=_safe_float(payload.get("MarketCapitalization")),
+    )
+
+
+def _fetch_massive_fundamentals(symbol: str) -> FundamentalMetrics:
+    api_key = os.getenv("MASSIVE_API_KEY", "").strip()
+    if not api_key:
+        logger.error(
+            "Massive fundamentals missing API key symbol=%s provider=massive",
+            symbol.upper(),
+        )
+        raise RuntimeError("MASSIVE_API_KEY is required when MARKETS_DATA_PROVIDER=massive")
+
+    api_url = (
+        "https://api.massive.com/v3/reference/tickers/"
+        f"{quote_plus(symbol.upper())}?apiKey={quote_plus(api_key)}"
+    )
+    request = Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
+    logger.info("External request service=massive endpoint=fundamentals symbol=%s", symbol.upper())
+
+    try:
+        with urlopen(request, timeout=8) as response:
+            raw_payload = response.read().decode("utf-8")
+    except (HTTPError, URLError, TimeoutError) as exc:
+        logger.error(
+            "External response service=massive endpoint=fundamentals symbol=%s error=%s",
+            symbol.upper(),
+            exc,
+        )
+        raise RuntimeError("Unable to fetch fundamentals from Massive.") from exc
+
+    payload = json.loads(raw_payload)
+    result = payload.get("results")
+    if not isinstance(result, dict):
+        logger.error(
+            "External response service=massive endpoint=fundamentals "
+            "symbol=%s missing_results=true",
+            symbol.upper(),
+        )
+        raise RuntimeError(f"Massive fundamentals error for symbol '{symbol}'.")
+
+    return FundamentalMetrics(
+        pe_ratio=None,
+        eps=None,
+        debt_to_equity=None,
+        market_cap=_safe_float(result.get("market_cap")),
     )
 
 
