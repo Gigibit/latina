@@ -309,6 +309,36 @@ def test_get_candle_history_yfinance_fallback_disabled_raises_original_error(mon
         data_sources.get_candle_history(symbol="AAPL", candle_size="1d", lookback_candles=2)
 
 
+def test_get_candle_history_yfinance_intraday_does_not_fallback_to_stooq(monkeypatch):
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "yfinance")
+    monkeypatch.setenv("YFINANCE_FALLBACK_TO_STOOQ_ENABLED", "true")
+
+    calls = {"stooq": 0}
+
+    class _DummyTicker:
+        def __init__(self, _symbol):
+            pass
+
+        def history(self, period, interval):
+            raise RuntimeError("Too Many Requests. Rate limited. Try after a while.")
+
+    def _unexpected_stooq(*args, **kwargs):
+        calls["stooq"] += 1
+        raise AssertionError("stooq fallback should not be used for intraday candle_size")
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "yfinance",
+        types.SimpleNamespace(Ticker=_DummyTicker),
+    )
+    monkeypatch.setattr(data_sources, "_get_stooq_candle_history", _unexpected_stooq)
+
+    with pytest.raises(RuntimeError, match="Too Many Requests"):
+        data_sources.get_candle_history(symbol="AAPL", candle_size="1h", lookback_candles=10)
+
+    assert calls["stooq"] == 0
+
+
 def test_fetch_fundamental_metrics_skips_for_stooq(monkeypatch):
     monkeypatch.setenv("MARKETS_DATA_PROVIDER", "stooq")
 
