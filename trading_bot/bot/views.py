@@ -16,6 +16,13 @@ from trading_bot.bot.service import generate_suggestion, get_best_candidates, ge
 logger = logging.getLogger(__name__)
 
 
+def _is_env_flag_enabled(name: str, default: bool = True) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _auto_detection_symbol_number() -> int:
     raw_value = os.getenv("AUTO_DETECTION_SYMBOL_NUMBER", "7").strip()
     if raw_value.lower() in {"false", "off", "no"}:
@@ -344,6 +351,7 @@ def candle_playground_view(request):
         positive_candles = 0
         negative_candles = 0
         sequence: list[str] = []
+        possibility_enabled = _is_env_flag_enabled("POSSIBILITY_ENABLED", default=True)
         for candle_date, row in history_rows:
             if candle_date < effective_start_date:
                 continue
@@ -358,10 +366,16 @@ def candle_playground_view(request):
             )
             if close_price >= open_price:
                 positive_candles += 1
-                sequence.append(f"G( probability={normalized_range_probability:.4f} )")
+                if possibility_enabled:
+                    sequence.append(f"G( probability={normalized_range_probability:.4f} )")
+                else:
+                    sequence.append("G")
             else:
                 negative_candles += 1
-                sequence.append(f"R( probability={normalized_range_probability:.4f} )")
+                if possibility_enabled:
+                    sequence.append(f"R( probability={normalized_range_probability:.4f} )")
+                else:
+                    sequence.append("R")
 
         total_candles = positive_candles + negative_candles
         if total_candles == 0:
