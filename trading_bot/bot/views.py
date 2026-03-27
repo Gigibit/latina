@@ -9,6 +9,7 @@ from django.shortcuts import render
 from django.views.decorators.http import require_GET
 
 from trading_bot.bot.data_sources import get_candle_history, resolve_candle_size
+from trading_bot.bot.llm import LLMDecider
 from trading_bot.bot.research_session import research_sessions
 from trading_bot.bot.service import generate_suggestion, get_best_candidates, get_market_monitor
 
@@ -295,11 +296,19 @@ def candle_playground_view(request):
         if not sequence:
             raise ValueError("No candle data available from the selected date.")
 
+        sequence_text = "".join(sequence)
+        llm_provider = os.getenv("LLM_PROVIDER", "openai").strip().lower()
+        llm_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
+        llm_api_key = os.getenv("OPENAI_API_KEY")
+        llm_decider = LLMDecider(provider=llm_provider, model=llm_model, api_key=llm_api_key)
+        prediction = llm_decider.predict_next_candle_character(sequence_text)
+
         payload = {
             "symbol": symbol,
             "date": requested_date,
             "size": requested_size,
-            "sequence": "".join(sequence),
+            "sequence": sequence_text,
+            "prediction": prediction,
             "candles_count": closes_from_date,
         }
         logger.info(
