@@ -377,7 +377,7 @@ def test_best_projection_view_returns_chart_payload(monkeypatch):
     assert '"predicted_granularity_closes":' in content
 
 
-def test_candle_playground_view_returns_rg_sequence(monkeypatch):
+def test_candle_playground_view_returns_sentiment(monkeypatch):
     from datetime import date
 
     class _FakeFrame:
@@ -404,11 +404,14 @@ def test_candle_playground_view_returns_rg_sequence(monkeypatch):
         lambda self, sequence: "G",
     )
 
-    request = RequestFactory().get("/api/playground/?symbol=AAPL&date=2024-01-02&size=1d")
+    request = RequestFactory().get(
+        "/api/playground/?symbol=AAPL&date=2024-01-02&size=1d&history_limit=10000"
+    )
     response = candle_playground_view(request)
 
     assert response.status_code == 200
     content = response.content.decode("utf-8")
+    assert '"sentiment": "positive"' in content
     assert '"sequence": "GR"' in content
     assert '"prediction": "G"' in content
     assert '"candles_count": 2' in content
@@ -419,6 +422,15 @@ def test_candle_playground_view_rejects_invalid_size():
     response = candle_playground_view(request)
     assert response.status_code == 400
     assert b"size must be one of" in response.content
+
+
+def test_candle_playground_view_rejects_invalid_history_limit():
+    request = RequestFactory().get(
+        "/api/playground/?symbol=AAPL&date=2024-01-02&size=1d&history_limit=12000"
+    )
+    response = candle_playground_view(request)
+    assert response.status_code == 400
+    assert b"history_limit must be between 1 and 10000" in response.content
 
 
 

@@ -244,6 +244,7 @@ def candle_playground_view(request):
     symbol = request.GET.get("symbol", "").strip().upper()
     requested_date = request.GET.get("date", "").strip()
     requested_size = request.GET.get("size", "1d").strip()
+    requested_history_limit = request.GET.get("history_limit", "10000").strip()
     size_mapping = {
         "1h": "1h",
         "1d": "1d",
@@ -252,10 +253,11 @@ def candle_playground_view(request):
     }
 
     logger.info(
-        "Request candle_playground_view symbol=%s date=%s size=%s",
+        "Request candle_playground_view symbol=%s date=%s size=%s history_limit=%s",
         symbol,
         requested_date,
         requested_size,
+        requested_history_limit,
     )
 
     try:
@@ -265,6 +267,12 @@ def candle_playground_view(request):
             raise ValueError("date is required (YYYY-MM-DD).")
         if requested_size not in size_mapping:
             raise ValueError("size must be one of: 1h, 1d, 1w, 1M.")
+        try:
+            history_limit = int(requested_history_limit)
+        except ValueError as exc:
+            raise ValueError("history_limit must be an integer between 1 and 10000.") from exc
+        if history_limit < 1 or history_limit > 10000:
+            raise ValueError("history_limit must be between 1 and 10000.")
 
         start_date = date.fromisoformat(requested_date)
         if start_date > date.today():
@@ -273,7 +281,7 @@ def candle_playground_view(request):
         normalized_size = size_mapping[requested_size]
         _, candle_span_days = resolve_candle_size(normalized_size)
         distance_days = max((date.today() - start_date).days, 1)
-        lookback_candles = max(int(distance_days / candle_span_days) + 5, 10)
+        lookback_candles = min(max(int(distance_days / candle_span_days) + 5, 10), history_limit)
 
         history = get_candle_history(
             symbol=symbol,
@@ -281,8 +289,8 @@ def candle_playground_view(request):
             lookback_candles=lookback_candles,
         )
 
-        sequence: list[str] = []
-        closes_from_date = 0
+        positive_candles = 0
+        negative_candles = 0
         for index, row in history.iterrows():
             candle_date = index.date() if hasattr(index, "date") else index
             if candle_date < start_date:
@@ -290,12 +298,16 @@ def candle_playground_view(request):
 
             open_price = float(row["Open"])
             close_price = float(row["Close"])
-            sequence.append("G" if close_price >= open_price else "R")
-            closes_from_date += 1
+            if close_price >= open_price:
+                positive_candles += 1
+            else:
+                negative_candles += 1
 
-        if not sequence:
+        total_candles = positive_candles + negative_candles
+        if total_candles == 0:
             raise ValueError("No candle data available from the selected date.")
 
+        sentiment = "positive" if positive_candles >= negative_candles else "negative"
         sequence_text = "".join(sequence)
         llm_provider = os.getenv("LLM_PROVIDER", "openai").strip().lower()
         llm_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
@@ -307,22 +319,26 @@ def candle_playground_view(request):
             "symbol": symbol,
             "date": requested_date,
             "size": requested_size,
+            "sentiment": sentiment,
             "sequence": sequence_text,
             "prediction": prediction,
             "candles_count": closes_from_date,
         }
         logger.info(
-            "Response candle_playground_view status=200 symbol=%s candles=%s",
+            "Response candle_playground_view status=200 symbol=%s candles=%s sentiment=%s",
             symbol,
-            closes_from_date,
+            total_candles,
+            sentiment,
         )
         return JsonResponse(payload)
     except Exception as exc:
         logger.error(
-            "Response candle_playground_view status=400 symbol=%s date=%s size=%s error=%s",
+            "Response candle_playground_view status=400 symbol=%s date=%s "
+            "size=%s history_limit=%s error=%s",
             symbol,
             requested_date,
             requested_size,
+            requested_history_limit,
             exc,
         )
         logger.exception("candle_playground_view failed")
