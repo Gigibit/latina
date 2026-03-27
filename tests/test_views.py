@@ -64,3 +64,32 @@ def test_candle_playground_rejects_future_date():
     assert response.status_code == 400
     payload = json.loads(response.content)
     assert "future" in payload["error"].lower()
+
+
+def test_candle_playground_disables_probability_when_possibility_env_is_false(monkeypatch):
+    history = pd.DataFrame(
+        [
+            {"Open": 100.0, "Close": 101.0},
+            {"Open": 101.0, "Close": 99.0},
+        ],
+        index=pd.to_datetime(["2025-12-24 15:00:00", "2025-12-26 15:00:00"]),
+    )
+    monkeypatch.setattr("trading_bot.bot.views.get_candle_history", lambda **kwargs: history)
+    monkeypatch.setattr("trading_bot.bot.views.LLMDecider", DummyLLMDecider)
+    monkeypatch.setenv("POSSIBILITY_ENABLED", "false")
+
+    request = RequestFactory().get(
+        "/api/playground/",
+        {
+            "symbol": "AAPL",
+            "date": "2025-12-24",
+            "size": "1h",
+            "history_limit": "10000",
+        },
+    )
+
+    response = candle_playground_view(request)
+
+    assert response.status_code == 200
+    payload = json.loads(response.content)
+    assert payload["sequence"] == "G R"
