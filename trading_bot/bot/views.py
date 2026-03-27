@@ -310,12 +310,42 @@ def candle_playground_view(request):
             lookback_candles=lookback_candles,
         )
 
+        history_rows: list[tuple[date, object]] = []
+        for index, row in history.iterrows():
+            candle_date = index.date() if hasattr(index, "date") else index
+            history_rows.append((candle_date, row))
+
+        if not history_rows:
+            logger.error(
+                "candle_playground_view history rows are empty after fetch symbol=%s "
+                "requested_date=%s size=%s lookback_candles=%s",
+                symbol,
+                requested_date,
+                requested_size,
+                lookback_candles,
+            )
+            raise ValueError("No candle data available from the selected date.")
+
+        earliest_available_date = min(candle_date for candle_date, _ in history_rows)
+        latest_available_date = max(candle_date for candle_date, _ in history_rows)
+        effective_start_date = start_date
+        if start_date > latest_available_date:
+            logger.error(
+                "candle_playground_view requested date out of range symbol=%s "
+                "requested_date=%s latest_available_date=%s earliest_available_date=%s "
+                "action=use_latest_available_date",
+                symbol,
+                start_date.isoformat(),
+                latest_available_date.isoformat(),
+                earliest_available_date.isoformat(),
+            )
+            effective_start_date = latest_available_date
+
         positive_candles = 0
         negative_candles = 0
         sequence: list[str] = []
-        for index, row in history.iterrows():
-            candle_date = index.date() if hasattr(index, "date") else index
-            if candle_date < start_date:
+        for candle_date, row in history_rows:
+            if candle_date < effective_start_date:
                 continue
 
             open_price = float(row["Open"])
@@ -329,6 +359,16 @@ def candle_playground_view(request):
 
         total_candles = positive_candles + negative_candles
         if total_candles == 0:
+            logger.error(
+                "candle_playground_view no candles after filtering symbol=%s "
+                "requested_date=%s effective_start_date=%s earliest_available_date=%s "
+                "latest_available_date=%s",
+                symbol,
+                start_date.isoformat(),
+                effective_start_date.isoformat(),
+                earliest_available_date.isoformat(),
+                latest_available_date.isoformat(),
+            )
             raise ValueError("No candle data available from the selected date.")
 
         sentiment = "positive" if positive_candles >= negative_candles else "negative"
