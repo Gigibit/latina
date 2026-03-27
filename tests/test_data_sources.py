@@ -1,5 +1,6 @@
 import json
 import types
+from datetime import datetime, timedelta
 from urllib.error import HTTPError, URLError
 
 import pytest
@@ -241,6 +242,38 @@ def test_get_candle_history_alpha_vantage_provider(monkeypatch):
     assert str(history.index[0].date()) == "2024-01-02"
 
 
+def test_get_candle_history_alpha_vantage_1h_uses_row_target_not_days(monkeypatch):
+    lookback_candles = 240
+    start = datetime(2025, 1, 1, 9, 0)
+    series: dict[str, dict[str, str]] = {}
+    for index in range(lookback_candles + 30):
+        timestamp = (start + timedelta(hours=index)).strftime("%Y-%m-%d %H:%M:%S")
+        price = 100 + index
+        series[timestamp] = {
+            "1. open": str(price),
+            "2. high": str(price + 1),
+            "3. low": str(price - 1),
+            "4. close": str(price + 0.5),
+            "5. volume": str(1000 + index),
+        }
+    payload = {"Time Series (60min)": series}
+
+    def fake_urlopen(request, timeout):
+        return _DummyResponse(payload)
+
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "alpha_vantage")
+    monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "demo")
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    history = data_sources.get_candle_history(
+        symbol="AAPL",
+        candle_size="1h",
+        lookback_candles=lookback_candles,
+    )
+
+    assert len(history) == lookback_candles
+
+
 def test_get_candle_history_alpha_vantage_requires_api_key(monkeypatch):
     monkeypatch.setenv("MARKETS_DATA_PROVIDER", "alpha_vantage")
     monkeypatch.delenv("ALPHA_VANTAGE_API_KEY", raising=False)
@@ -279,6 +312,42 @@ def test_get_candle_history_massive_provider(monkeypatch):
     assert str(history.index[0].date()) == "2024-01-02"
     assert "api.massive.com/v2/aggs/ticker/AAPL/range/1/day/" in captured["url"]
     assert "apiKey=demo" in captured["url"]
+
+
+def test_get_candle_history_massive_1h_uses_row_target_not_days(monkeypatch):
+    lookback_candles = 240
+    start = datetime(2025, 1, 1, 9, 0)
+    payload = {
+        "results": [
+            {
+                "t": int((start + timedelta(hours=index)).timestamp() * 1000),
+                "o": 100 + index,
+                "h": 101 + index,
+                "l": 99 + index,
+                "c": 100.5 + index,
+                "v": 1000 + index,
+            }
+            for index in range(lookback_candles + 60)
+        ]
+    }
+    captured = {"url": ""}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        return _DummyResponse(payload)
+
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "massive")
+    monkeypatch.setenv("MASSIVE_API_KEY", "demo")
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    history = data_sources.get_candle_history(
+        symbol="AAPL",
+        candle_size="1h",
+        lookback_candles=lookback_candles,
+    )
+
+    assert len(history) == lookback_candles
+    assert "api.massive.com/v2/aggs/ticker/AAPL/range/1/hour/" in captured["url"]
 
 
 def test_get_candle_history_massive_requires_api_key(monkeypatch):

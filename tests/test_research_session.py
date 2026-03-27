@@ -433,6 +433,63 @@ def test_candle_playground_view_rejects_invalid_history_limit():
     assert b"history_limit must be between 1 and 10000" in response.content
 
 
+def test_candle_playground_view_1h_sequence_is_not_truncated(monkeypatch):
+    import json
+    from datetime import datetime, timedelta
+
+    from trading_bot.bot import data_sources
+
+    class _DummyResponse:
+        def __init__(self, payload: dict):
+            self._payload = payload
+
+        def read(self):
+            return json.dumps(self._payload).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    start = datetime(2025, 12, 1, 14, 0)
+    candles = []
+    for index in range(2500):
+        timestamp = int((start + timedelta(hours=index)).timestamp() * 1000)
+        open_price = 100 + index
+        close_price = open_price + (1 if index % 2 == 0 else -1)
+        candles.append(
+            {
+                "t": timestamp,
+                "o": open_price,
+                "h": open_price + 2,
+                "l": open_price - 2,
+                "c": close_price,
+                "v": 1000 + index,
+            }
+        )
+
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "massive")
+    monkeypatch.setenv("MASSIVE_API_KEY", "demo")
+    monkeypatch.setattr(
+        data_sources,
+        "urlopen",
+        lambda request, timeout: _DummyResponse({"results": candles}),
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.views.LLMDecider.predict_next_candle_character",
+        lambda self, sequence: "G",
+    )
+
+    request = RequestFactory().get("/api/playground/?symbol=AAPL&date=2025-12-25&size=1h")
+    response = candle_playground_view(request)
+
+    assert response.status_code == 200
+    payload = json.loads(response.content.decode("utf-8"))
+    assert payload["size"] == "1h"
+    assert len(payload["sequence"]) > 95
+
+
 
 def test_research_job_retries_on_rate_limit_and_completes(monkeypatch):
     monkeypatch.setenv("SUGGESTION_RATE_LIMIT_MAX_ATTEMPTS", "3")
