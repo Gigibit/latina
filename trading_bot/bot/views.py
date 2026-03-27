@@ -333,13 +333,13 @@ def candle_playground_view(request):
             logger.error(
                 "candle_playground_view requested date out of range symbol=%s "
                 "requested_date=%s latest_available_date=%s earliest_available_date=%s "
-                "action=use_latest_available_date",
+                "action=use_earliest_available_date",
                 symbol,
                 start_date.isoformat(),
                 latest_available_date.isoformat(),
                 earliest_available_date.isoformat(),
             )
-            effective_start_date = latest_available_date
+            effective_start_date = earliest_available_date
 
         positive_candles = 0
         negative_candles = 0

@@ -17,7 +17,7 @@ class DummyLLMDecider:
         return "G"
 
 
-def test_candle_playground_uses_latest_available_when_requested_date_is_out_of_range(monkeypatch):
+def test_candle_playground_uses_earliest_available_when_requested_date_is_out_of_range(monkeypatch):
     history = pd.DataFrame(
         [
             {"Open": 100.0, "Close": 101.0},
@@ -43,8 +43,8 @@ def test_candle_playground_uses_latest_available_when_requested_date_is_out_of_r
     assert response.status_code == 200
     payload = json.loads(response.content)
     assert payload["symbol"] == "AAPL"
-    assert payload["candles_count"] == 1
-    assert payload["sequence"] == "R"
+    assert payload["candles_count"] == 2
+    assert payload["sequence"] == "GR"
 
 
 def test_candle_playground_rejects_future_date():
