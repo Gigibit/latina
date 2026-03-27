@@ -83,11 +83,13 @@ LOGGING = {
         "console": {
             "class": "logging.StreamHandler",
             "formatter": "standard",
+            "level": LOG_LEVEL,
+            "stream": "ext://sys.stdout",
         },
     },
     "root": {
         "handlers": ["console"],
-        "level": "WARNING",
+        "level": LOG_LEVEL,
     },
     "loggers": {
         "trading_bot.bot": {

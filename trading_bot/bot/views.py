@@ -67,9 +67,10 @@ def trading_suggestion_view(request):
             if status_only:
                 job = research_sessions.get(session_id)
                 if not job:
-                    logger.warning(
+                    logger.error(
                         "Response trading_suggestion_view status=404 "
-                        "reason=unknown_research_session session_id=%s",
+                        "reason=unknown_research_session session_id=%s "
+                        "message=Unknown research session.",
                         session_id,
                     )
                     return JsonResponse({"error": "Unknown research session."}, status=404)
@@ -115,6 +116,11 @@ def trading_suggestion_view(request):
         )
         return JsonResponse(payload)
     except Exception as exc:
+        logger.error(
+            "Response trading_suggestion_view status=400 "
+            "message=Failed to generate trading suggestion error=%s",
+            exc,
+        )
         logger.exception("Response trading_suggestion_view status=400 error=%s", exc)
         return JsonResponse({"error": str(exc)}, status=400)
 
@@ -138,6 +144,11 @@ def best_candidates_view(request):
         )
         return JsonResponse(payload)
     except Exception as exc:
+        logger.error(
+            "Response best_candidates_view status=400 "
+            "message=Failed to compute best candidates error=%s",
+            exc,
+        )
         logger.exception("Response best_candidates_view status=400 error=%s", exc)
         return JsonResponse({"error": str(exc)}, status=400)
 
@@ -155,6 +166,11 @@ def market_monitor_view(request):
         )
         return JsonResponse(payload)
     except Exception as exc:
+        logger.error(
+            "Response market_monitor_view status=400 "
+            "message=Failed to build market monitor payload error=%s",
+            exc,
+        )
         logger.exception("Response market_monitor_view status=400 error=%s", exc)
         return JsonResponse({"error": str(exc)}, status=400)
 
@@ -235,6 +251,11 @@ def best_projection_view(request):
             }
         )
     except Exception as exc:
+        logger.error(
+            "Response best_projection_view status=400 "
+            "message=Failed to compute best projection payload error=%s",
+            exc,
+        )
         logger.exception("Response best_projection_view status=400 error=%s", exc)
         return JsonResponse({"error": str(exc)}, status=400)
 
