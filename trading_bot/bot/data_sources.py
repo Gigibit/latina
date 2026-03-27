@@ -197,12 +197,25 @@ def resolve_candle_size(candle_size: str) -> tuple[str, float]:
 
 def get_candle_history(symbol: str, candle_size: str = "1d", lookback_candles: int = 180):
     provider = os.getenv("MARKETS_DATA_PROVIDER", "yfinance").strip().lower()
+    interval, _ = resolve_candle_size(candle_size)
+    stooq_supported = interval == "1d"
 
     if provider == "yfinance":
         providers_chain = ["yfinance"]
-        if _is_env_flag_enabled("YFINANCE_FALLBACK_TO_STOOQ_ENABLED", default=True):
+        if stooq_supported and _is_env_flag_enabled(
+            "YFINANCE_FALLBACK_TO_STOOQ_ENABLED",
+            default=True,
+        ):
             providers_chain.append("stooq")
     elif provider == "stooq":
+        if not stooq_supported:
+            logger.error(
+                "Candle history invalid provider selection symbol=%s provider=stooq "
+                "candle_size=%s error=Stooq only supports daily candles for now (1d, 7d, 1M).",
+                symbol.upper(),
+                candle_size,
+            )
+            raise ValueError("Stooq only supports daily candles for now (1d, 7d, 1M).")
         providers_chain = ["stooq"]
         if _is_env_flag_enabled("STOOQ_FALLBACK_TO_YFINANCE_ENABLED", default=False):
             providers_chain.append("yfinance")
@@ -247,14 +260,24 @@ def get_candle_history(symbol: str, candle_size: str = "1d", lookback_candles: i
         except Exception as exc:
             last_exception = exc
             has_fallback = index < len(providers_chain)
-            logger.warning(
-                "Candle history provider failed symbol=%s provider=%s "
-                "error=%s fallback_remaining=%s",
-                symbol.upper(),
-                provider_name,
-                exc,
-                has_fallback,
-            )
+            if has_fallback:
+                logger.warning(
+                    "Candle history provider failed symbol=%s provider=%s "
+                    "error=%s fallback_remaining=%s",
+                    symbol.upper(),
+                    provider_name,
+                    exc,
+                    has_fallback,
+                )
+            else:
+                logger.error(
+                    "Candle history provider failed symbol=%s provider=%s "
+                    "error=%s fallback_remaining=%s",
+                    symbol.upper(),
+                    provider_name,
+                    exc,
+                    has_fallback,
+                )
             if not has_fallback:
                 raise
 
