@@ -44,7 +44,7 @@ def test_candle_playground_uses_earliest_available_when_requested_date_is_out_of
     payload = json.loads(response.content)
     assert payload["symbol"] == "AAPL"
     assert payload["candles_count"] == 2
-    assert payload["sequence"] == "GR"
+    assert payload["sequence"] == "G( probability=0.0099 ) R( probability=0.0198 )"
 
 
 def test_candle_playground_rejects_future_date():

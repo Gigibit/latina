@@ -44,13 +44,16 @@ Rules:
 """
 
 NEXT_CANDLE_PREDICTION_SYSTEM_PROMPT = """You are a strict sequence predictor.
-You receive a sequence composed only of characters R and G.
+You receive a sequence with candle direction characters R/G and, for each character,
+an explicit probability in this format: R( probability=0.1234 ).
+The provided probability is the probability of that exact character at that position.
 Return JSON only in this exact schema:
 {
   "prediction": "R"
 }
 Rules:
 - prediction must be exactly one character: R or G.
+- Use the per-character probabilities as reliability weights for the sequence.
 - No extra keys, no markdown, no explanations.
 """
 
@@ -347,10 +350,8 @@ class LLMDecider:
         raise ValueError("Unsupported LLM provider for trend evaluation. Use 'openai'.")
 
     def predict_next_candle_character(self, sequence: str) -> str:
-        if not sequence:
+        if not sequence or not sequence.strip():
             raise ValueError("sequence is required to predict next candle.")
-        if any(char not in {"R", "G"} for char in sequence):
-            raise ValueError("sequence must contain only 'R' and 'G' characters.")
 
         prediction_prompt = (
             "Predict the next character in this candle direction sequence.\n\n"

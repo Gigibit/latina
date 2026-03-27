@@ -350,12 +350,18 @@ def candle_playground_view(request):
 
             open_price = float(row["Open"])
             close_price = float(row["Close"])
+            high_price = float(row.get("High", max(open_price, close_price)))
+            low_price = float(row.get("Low", min(open_price, close_price)))
+            normalized_range_probability = min(
+                abs(high_price - low_price) / max(abs(high_price), 1e-9),
+                1.0,
+            )
             if close_price >= open_price:
                 positive_candles += 1
-                sequence.append("G")
+                sequence.append(f"G( probability={normalized_range_probability:.4f} )")
             else:
                 negative_candles += 1
-                sequence.append("R")
+                sequence.append(f"R( probability={normalized_range_probability:.4f} )")
 
         total_candles = positive_candles + negative_candles
         if total_candles == 0:
@@ -372,7 +378,7 @@ def candle_playground_view(request):
             raise ValueError("No candle data available from the selected date.")
 
         sentiment = "positive" if positive_candles >= negative_candles else "negative"
-        sequence_text = "".join(sequence)
+        sequence_text = " ".join(sequence)
         llm_provider = os.getenv("LLM_PROVIDER", "openai").strip().lower()
         llm_model = os.getenv("OPENAI_MODEL", "gpt-4o-mini").strip()
         llm_api_key = os.getenv("OPENAI_API_KEY")

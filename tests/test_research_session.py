@@ -412,7 +412,7 @@ def test_candle_playground_view_returns_sentiment(monkeypatch):
     assert response.status_code == 200
     content = response.content.decode("utf-8")
     assert '"sentiment": "positive"' in content
-    assert '"sequence": "GR"' in content
+    assert '"sequence": "G( probability=0.0123 ) R( probability=0.0217 )"' in content
     assert '"prediction": "G"' in content
     assert '"candles_count": 2' in content
 
