@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import ssl
 import time
@@ -478,12 +479,21 @@ def _get_alpha_vantage_candle_history(
 
     api_key = os.getenv("ALPHA_VANTAGE_API_KEY", "").strip()
     if not api_key:
+        logger.error(
+            "Alpha Vantage candle history missing API key symbol=%s provider=alpha_vantage",
+            symbol.upper(),
+        )
         raise RuntimeError(
             "ALPHA_VANTAGE_API_KEY is required when MARKETS_DATA_PROVIDER=alpha_vantage"
         )
 
     interval, candle_span = resolve_candle_size(candle_size)
-    history_length = max(int(lookback_candles * candle_span) + 5, 60)
+    target_rows = max(int(lookback_candles * candle_span), 1)
+    history_days = max(target_rows + 5, 60)
+    if interval == "1h":
+        target_rows = max(int(lookback_candles), 1)
+        market_hours_per_day = 6.5
+        history_days = max(math.ceil(target_rows / market_hours_per_day) + 3, 5)
 
     if interval == "1h":
         api_url = (
@@ -503,12 +513,19 @@ def _get_alpha_vantage_candle_history(
         series_key = "Time Series (Daily)"
 
     request = Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
-    logger.info("External request service=alpha_vantage endpoint=history symbol=%s", symbol.upper())
+    logger.info(
+        "External request service=alpha_vantage endpoint=history symbol=%s "
+        "history_days=%s target_rows=%s interval=%s",
+        symbol.upper(),
+        history_days,
+        target_rows,
+        interval,
+    )
     try:
         with urlopen(request, timeout=8) as response:
             raw_payload = response.read().decode("utf-8")
     except (HTTPError, URLError, TimeoutError) as exc:
-        logger.warning(
+        logger.error(
             "External response service=alpha_vantage endpoint=history symbol=%s error=%s",
             symbol.upper(),
             exc,
@@ -517,12 +534,28 @@ def _get_alpha_vantage_candle_history(
 
     payload = json.loads(raw_payload)
     if "Error Message" in payload:
+        logger.error(
+            "External response service=alpha_vantage endpoint=history symbol=%s "
+            "error=error_message_from_provider",
+            symbol.upper(),
+        )
         raise RuntimeError(f"Alpha Vantage error for symbol '{symbol}'.")
     if "Note" in payload:
+        logger.error(
+            "External response service=alpha_vantage endpoint=history symbol=%s "
+            "error=rate_limit",
+            symbol.upper(),
+        )
         raise RuntimeError("Alpha Vantage rate limit reached. Try again later.")
 
     raw_series = payload.get(series_key)
     if not isinstance(raw_series, dict) or not raw_series:
+        logger.error(
+            "External response service=alpha_vantage endpoint=history symbol=%s "
+            "missing_series=%s",
+            symbol.upper(),
+            series_key,
+        )
         raise ValueError(f"Not enough data found for symbol '{symbol}'.")
 
     rows: list[dict[str, object]] = []
@@ -545,11 +578,21 @@ def _get_alpha_vantage_candle_history(
 
     frame = pd.DataFrame(rows).dropna()
     if frame.empty:
+        logger.error(
+            "External response service=alpha_vantage endpoint=history symbol=%s parsed_rows=0",
+            symbol.upper(),
+        )
         raise ValueError(f"Not enough data found for symbol '{symbol}'.")
 
     frame["Date"] = pd.to_datetime(frame["Date"], errors="coerce")
-    frame = frame.dropna(subset=["Date"]).set_index("Date").sort_index().tail(history_length)
+    frame = frame.dropna(subset=["Date"]).set_index("Date").sort_index()
+    if target_rows > 0:
+        frame = frame.tail(target_rows)
     if frame.empty:
+        logger.error(
+            "External response service=alpha_vantage endpoint=history symbol=%s tail_rows=0",
+            symbol.upper(),
+        )
         raise ValueError(f"Not enough data found for symbol '{symbol}'.")
 
     logger.info(
@@ -574,14 +617,19 @@ def _get_massive_candle_history(
         raise RuntimeError("MASSIVE_API_KEY is required when MARKETS_DATA_PROVIDER=massive")
 
     interval, candle_span = resolve_candle_size(candle_size)
-    history_length = max(int(lookback_candles * candle_span) + 5, 60)
+    target_rows = max(int(lookback_candles * candle_span), 1)
+    history_days = max(target_rows + 5, 60)
+    if interval == "1h":
+        target_rows = max(int(lookback_candles), 1)
+        market_hours_per_day = 6.5
+        history_days = max(math.ceil(target_rows / market_hours_per_day) + 3, 5)
 
     multiplier = 1
     timespan = "day"
     if interval == "1h":
         timespan = "hour"
     end_date = date.today()
-    start_date = end_date.fromordinal(end_date.toordinal() - history_length)
+    start_date = end_date.fromordinal(end_date.toordinal() - history_days)
     api_url = (
         "https://api.massive.com/v2/aggs/ticker/"
         f"{quote_plus(symbol.upper())}/range/{multiplier}/{timespan}/"
@@ -589,7 +637,14 @@ def _get_massive_candle_history(
         f"?adjusted=true&sort=asc&limit=50000&apiKey={quote_plus(api_key)}"
     )
     request = Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
-    logger.info("External request service=massive endpoint=history symbol=%s", symbol.upper())
+    logger.info(
+        "External request service=massive endpoint=history symbol=%s history_days=%s "
+        "target_rows=%s interval=%s",
+        symbol.upper(),
+        history_days,
+        target_rows,
+        interval,
+    )
 
     try:
         with urlopen(request, timeout=8) as response:
@@ -641,7 +696,9 @@ def _get_massive_candle_history(
             symbol.upper(),
         )
         raise ValueError(f"Not enough data found for symbol '{symbol}'.")
-    frame = frame.set_index("Date").sort_index().tail(history_length)
+    frame = frame.set_index("Date").sort_index()
+    if target_rows > 0:
+        frame = frame.tail(target_rows)
     if frame.empty:
         logger.error(
             "External response service=massive endpoint=history symbol=%s tail_rows=0",
