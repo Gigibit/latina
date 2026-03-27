@@ -255,6 +255,40 @@ def test_get_candle_history_rejects_unknown_provider(monkeypatch):
         data_sources.get_candle_history(symbol="AAPL")
 
 
+def test_get_candle_history_massive_provider(monkeypatch):
+    payload = {
+        "results": [
+            {"t": 1704153600000, "o": 10, "h": 11, "l": 9, "c": 10.5, "v": 100},
+            {"t": 1704240000000, "o": 11, "h": 12, "l": 10, "c": 11.5, "v": 120},
+        ]
+    }
+    captured = {"url": ""}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        return _DummyResponse(payload)
+
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "massive")
+    monkeypatch.setenv("MASSIVE_API_KEY", "demo")
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    history = data_sources.get_candle_history(symbol="AAPL", candle_size="1d", lookback_candles=2)
+
+    assert list(history.columns) == ["Open", "High", "Low", "Close", "Volume"]
+    assert len(history) == 2
+    assert str(history.index[0].date()) == "2024-01-02"
+    assert "api.massive.com/v2/aggs/ticker/AAPL/range/1/day/" in captured["url"]
+    assert "apiKey=demo" in captured["url"]
+
+
+def test_get_candle_history_massive_requires_api_key(monkeypatch):
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "massive")
+    monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="MASSIVE_API_KEY"):
+        data_sources.get_candle_history(symbol="AAPL")
+
+
 def test_get_candle_history_yfinance_falls_back_to_stooq(monkeypatch):
     csv_payload = """Date,Open,High,Low,Close,Volume
 2024-01-02,10,11,9,10.5,100
@@ -378,6 +412,35 @@ def test_fetch_fundamental_metrics_alpha_vantage_provider(monkeypatch):
     assert metrics.eps == 4.2
     assert metrics.debt_to_equity == 1.1
     assert metrics.market_cap == 1000000000.0
+
+
+def test_fetch_fundamental_metrics_massive_provider(monkeypatch):
+    payload = {"results": {"market_cap": 3000000000000}}
+    captured = {"url": ""}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        return _DummyResponse(payload)
+
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "massive")
+    monkeypatch.setenv("MASSIVE_API_KEY", "demo")
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    metrics = data_sources.fetch_fundamental_metrics("AAPL")
+
+    assert metrics.pe_ratio is None
+    assert metrics.eps is None
+    assert metrics.debt_to_equity is None
+    assert metrics.market_cap == 3000000000000.0
+    assert "api.massive.com/v3/reference/tickers/AAPL?apiKey=demo" in captured["url"]
+
+
+def test_fetch_fundamental_metrics_massive_requires_api_key(monkeypatch):
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "massive")
+    monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="MASSIVE_API_KEY"):
+        data_sources.fetch_fundamental_metrics("AAPL")
 
 
 def test_fetch_crypto_market_analysis_returns_none_without_api_key(monkeypatch):
