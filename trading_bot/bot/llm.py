@@ -43,6 +43,17 @@ Rules:
 - Keep each summary under 140 characters.
 """
 
+NEXT_CANDLE_PREDICTION_SYSTEM_PROMPT = """You are a strict sequence predictor.
+You receive a sequence composed only of characters R and G.
+Return JSON only in this exact schema:
+{
+  "prediction": "R"
+}
+Rules:
+- prediction must be exactly one character: R or G.
+- No extra keys, no markdown, no explanations.
+"""
+
 logger = logging.getLogger(__name__)
 
 
@@ -100,6 +111,13 @@ def _normalize_trend_evaluation(payload: dict[str, Any]) -> dict[str, dict[str, 
         }
 
     return normalized
+
+
+def _normalize_next_candle_prediction(payload: dict[str, Any]) -> str:
+    prediction = str(payload.get("prediction", "")).strip().upper()
+    if prediction not in {"R", "G"}:
+        raise ValueError("Invalid next candle prediction. Expected 'R' or 'G'.")
+    return prediction
 
 
 class LLMDecider:
@@ -327,3 +345,61 @@ class LLMDecider:
             return _normalize_trend_evaluation(json.loads(content))
 
         raise ValueError("Unsupported LLM provider for trend evaluation. Use 'openai'.")
+
+    def predict_next_candle_character(self, sequence: str) -> str:
+        if not sequence:
+            raise ValueError("sequence is required to predict next candle.")
+        if any(char not in {"R", "G"} for char in sequence):
+            raise ValueError("sequence must contain only 'R' and 'G' characters.")
+
+        prediction_prompt = (
+            "Predict the next character in this candle direction sequence.\n\n"
+            f"Sequence:\n{sequence}"
+        )
+
+        if self.provider == "openai":
+            if not self.api_key:
+                raise ValueError("OPENAI_API_KEY is missing.")
+            try:
+                from openai import OpenAI
+            except ImportError as exc:
+                raise RuntimeError(
+                    "openai is not installed. Install dependencies from requirements.txt"
+                ) from exc
+            client = OpenAI(api_key=self.api_key)
+            request_payload = {
+                "model": self.model,
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {"role": "system", "content": NEXT_CANDLE_PREDICTION_SYSTEM_PROMPT},
+                    {"role": "user", "content": prediction_prompt},
+                ],
+            }
+            logger.info(
+                (
+                    "External request service=openai endpoint=chat.completions "
+                    "provider=%s host=%s payload=%s"
+                ),
+                self.provider,
+                str(getattr(client, "base_url", "https://api.openai.com")).rstrip("/"),
+                _truncate_for_log(json.dumps(request_payload, ensure_ascii=False)),
+            )
+            resp = client.chat.completions.create(
+                **request_payload,
+            )
+            content = resp.choices[0].message.content or "{}"
+            logger.info(
+                (
+                    "External response service=openai endpoint=chat.completions "
+                    "provider=%s model=%s output_chars=%s"
+                ),
+                self.provider,
+                self.model,
+                len(content),
+            )
+            return _normalize_next_candle_prediction(json.loads(content))
+
+        raise ValueError(
+            "Unsupported LLM provider for next candle prediction. Use 'openai'."
+        )

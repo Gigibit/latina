@@ -399,6 +399,10 @@ def test_candle_playground_view_returns_sentiment(monkeypatch):
         "trading_bot.bot.views.get_candle_history",
         lambda symbol, candle_size, lookback_candles: _FakeFrame(),
     )
+    monkeypatch.setattr(
+        "trading_bot.bot.views.LLMDecider.predict_next_candle_character",
+        lambda self, sequence: "G",
+    )
 
     request = RequestFactory().get(
         "/api/playground/?symbol=AAPL&date=2024-01-02&size=1d&history_limit=10000"
@@ -408,6 +412,9 @@ def test_candle_playground_view_returns_sentiment(monkeypatch):
     assert response.status_code == 200
     content = response.content.decode("utf-8")
     assert '"sentiment": "positive"' in content
+    assert '"sequence": "GR"' in content
+    assert '"prediction": "G"' in content
+    assert '"candles_count": 2' in content
 
 
 def test_candle_playground_view_rejects_invalid_size():
