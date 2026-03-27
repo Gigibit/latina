@@ -312,6 +312,7 @@ def candle_playground_view(request):
 
         positive_candles = 0
         negative_candles = 0
+        sequence: list[str] = []
         for index, row in history.iterrows():
             candle_date = index.date() if hasattr(index, "date") else index
             if candle_date < start_date:
@@ -321,8 +322,10 @@ def candle_playground_view(request):
             close_price = float(row["Close"])
             if close_price >= open_price:
                 positive_candles += 1
+                sequence.append("G")
             else:
                 negative_candles += 1
+                sequence.append("R")
 
         total_candles = positive_candles + negative_candles
         if total_candles == 0:
@@ -343,7 +346,7 @@ def candle_playground_view(request):
             "sentiment": sentiment,
             "sequence": sequence_text,
             "prediction": prediction,
-            "candles_count": closes_from_date,
+            "candles_count": total_candles,
         }
         logger.info(
             "Response candle_playground_view status=200 symbol=%s candles=%s sentiment=%s",
