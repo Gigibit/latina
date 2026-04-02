@@ -8,7 +8,7 @@ from django.http import JsonResponse
 from django.shortcuts import render
 from django.views.decorators.http import require_GET, require_http_methods
 
-from trading_bot.bot.agent_runtime import agent_runtime
+from trading_bot.bot.agent_runtime import agent_runtime, crypto_agent_runtime
 from trading_bot.bot.data_sources import get_candle_history, resolve_candle_size
 from trading_bot.bot.llm import LLMDecider
 from trading_bot.bot.research_session import research_sessions
@@ -578,3 +578,110 @@ def agent_health_view(request):
         )
         logger.exception("Response agent_health_view status=500 error=%s", exc)
         return JsonResponse({"error": str(exc)}, status=500)
+
+
+@require_http_methods(["POST"])
+def crypto_agent_start_view(request):
+    try:
+        session = crypto_agent_runtime.start()
+        payload = crypto_agent_runtime.session_payload()
+        payload["sessionId"] = str(session.session_id)
+        return JsonResponse(payload)
+    except Exception as exc:
+        logger.error(
+            "Response crypto_agent_start_view status=400 "
+            "message=Failed to start crypto agent error=%s",
+            exc,
+        )
+        logger.exception("Response crypto_agent_start_view status=400 error=%s", exc)
+        return JsonResponse({"error": str(exc)}, status=400)
+
+
+@require_http_methods(["POST"])
+def crypto_agent_stop_view(request):
+    try:
+        crypto_agent_runtime.stop()
+        return JsonResponse(crypto_agent_runtime.session_payload())
+    except Exception as exc:
+        logger.error(
+            "Response crypto_agent_stop_view status=400 "
+            "message=Failed to stop crypto agent error=%s",
+            exc,
+        )
+        logger.exception("Response crypto_agent_stop_view status=400 error=%s", exc)
+        return JsonResponse({"error": str(exc)}, status=400)
+
+
+@require_GET
+def crypto_agent_session_view(request):
+    try:
+        return JsonResponse(crypto_agent_runtime.session_payload())
+    except Exception as exc:
+        logger.error(
+            "Response crypto_agent_session_view status=500 "
+            "message=Failed to read crypto session error=%s",
+            exc,
+        )
+        logger.exception("Response crypto_agent_session_view status=500 error=%s", exc)
+        return JsonResponse({"error": str(exc)}, status=500)
+
+
+@require_GET
+def crypto_agent_logs_view(request):
+    try:
+        payload = crypto_agent_runtime.session_payload()
+        return JsonResponse(
+            {"sessionId": payload.get("sessionId"), "recentLogs": payload.get("recentLogs", [])}
+        )
+    except Exception as exc:
+        logger.error(
+            "Response crypto_agent_logs_view status=500 "
+            "message=Failed to read crypto logs error=%s",
+            exc,
+        )
+        logger.exception("Response crypto_agent_logs_view status=500 error=%s", exc)
+        return JsonResponse({"error": str(exc)}, status=500)
+
+
+@require_GET
+def crypto_agent_proposals_view(request):
+    try:
+        return JsonResponse({"proposals": crypto_agent_runtime.proposals_payload()})
+    except Exception as exc:
+        logger.error(
+            "Response crypto_agent_proposals_view status=500 "
+            "message=Failed to read crypto proposals error=%s",
+            exc,
+        )
+        logger.exception("Response crypto_agent_proposals_view status=500 error=%s", exc)
+        return JsonResponse({"error": str(exc)}, status=500)
+
+
+@require_http_methods(["POST"])
+def crypto_agent_approve_view(request, proposal_id: str):
+    try:
+        payload = crypto_agent_runtime.approve(proposal_id)
+        return JsonResponse(payload)
+    except Exception as exc:
+        logger.error(
+            "Response crypto_agent_approve_view status=400 "
+            "message=Failed to approve crypto proposal error=%s",
+            exc,
+        )
+        logger.exception("Response crypto_agent_approve_view status=400 error=%s", exc)
+        return JsonResponse({"error": str(exc)}, status=400)
+
+
+@require_http_methods(["POST"])
+def crypto_agent_reject_view(request, proposal_id: str):
+    try:
+        payload = crypto_agent_runtime.reject(proposal_id)
+        return JsonResponse(payload)
+    except Exception as exc:
+        logger.error(
+            "Response crypto_agent_reject_view status=400 "
+            "message=Failed to reject crypto proposal error=%s",
+            exc,
+        )
+        logger.exception("Response crypto_agent_reject_view status=400 error=%s", exc)
+        return JsonResponse({"error": str(exc)}, status=400)
