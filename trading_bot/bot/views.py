@@ -6,8 +6,9 @@ from datetime import date, timedelta
 
 from django.http import JsonResponse
 from django.shortcuts import render
-from django.views.decorators.http import require_GET
+from django.views.decorators.http import require_GET, require_http_methods
 
+from trading_bot.bot.agent_runtime import agent_runtime
 from trading_bot.bot.data_sources import get_candle_history, resolve_candle_size
 from trading_bot.bot.llm import LLMDecider
 from trading_bot.bot.research_session import research_sessions
@@ -427,3 +428,108 @@ def candle_playground_view(request):
         )
         logger.exception("candle_playground_view failed")
         return JsonResponse({"error": str(exc)}, status=400)
+
+
+@require_http_methods(["POST"])
+def agent_start_view(request):
+    try:
+        session = agent_runtime.start()
+        payload = agent_runtime.session_payload()
+        payload["sessionId"] = str(session.session_id)
+        return JsonResponse(payload)
+    except Exception as exc:
+        logger.error(
+            "Response agent_start_view status=400 message=Failed to start agent error=%s",
+            exc,
+        )
+        logger.exception("Response agent_start_view status=400 error=%s", exc)
+        return JsonResponse({"error": str(exc)}, status=400)
+
+
+@require_http_methods(["POST"])
+def agent_stop_view(request):
+    try:
+        agent_runtime.stop()
+        return JsonResponse(agent_runtime.session_payload())
+    except Exception as exc:
+        logger.error(
+            "Response agent_stop_view status=400 message=Failed to stop agent error=%s",
+            exc,
+        )
+        logger.exception("Response agent_stop_view status=400 error=%s", exc)
+        return JsonResponse({"error": str(exc)}, status=400)
+
+
+@require_GET
+def agent_session_view(request):
+    return JsonResponse(agent_runtime.session_payload())
+
+
+@require_GET
+def agent_logs_view(request):
+    payload = agent_runtime.session_payload()
+    return JsonResponse(
+        {"sessionId": payload.get("sessionId"), "recentLogs": payload.get("recentLogs", [])}
+    )
+
+
+@require_GET
+def agent_proposals_view(request):
+    return JsonResponse({"proposals": agent_runtime.proposals_payload()})
+
+
+@require_http_methods(["POST"])
+def agent_approve_view(request, proposal_id: str):
+    try:
+        payload = agent_runtime.approve(proposal_id)
+        return JsonResponse(payload)
+    except Exception as exc:
+        logger.error(
+            "Response agent_approve_view status=400 message=Failed to approve proposal error=%s",
+            exc,
+        )
+        logger.exception("Response agent_approve_view status=400 error=%s", exc)
+        return JsonResponse({"error": str(exc)}, status=400)
+
+
+@require_http_methods(["POST"])
+def agent_reject_view(request, proposal_id: str):
+    try:
+        payload = agent_runtime.reject(proposal_id)
+        return JsonResponse(payload)
+    except Exception as exc:
+        logger.error(
+            "Response agent_reject_view status=400 message=Failed to reject proposal error=%s",
+            exc,
+        )
+        logger.exception("Response agent_reject_view status=400 error=%s", exc)
+        return JsonResponse({"error": str(exc)}, status=400)
+
+
+@require_GET
+def agent_portfolio_view(request):
+    payload = agent_runtime.session_payload()
+    return JsonResponse({
+        "sessionId": payload.get("sessionId"),
+        "portfolioSummary": payload.get("portfolioSummary", {}),
+        "cash": payload.get("cash"),
+        "openPositions": payload.get("openPositions"),
+        "unrealizedPnL": payload.get("unrealizedPnL"),
+        "realizedPnL": payload.get("realizedPnL"),
+        "drawdown": payload.get("drawdown"),
+        "riskLevel": payload.get("riskLevel"),
+    })
+
+
+@require_GET
+def agent_health_view(request):
+    payload = agent_runtime.session_payload()
+    return JsonResponse({
+        "sessionId": payload.get("sessionId"),
+        "status": payload.get("status"),
+        "heartbeatAt": payload.get("heartbeatAt"),
+        "workerHealthy": payload.get("workerHealthy"),
+        "latestSyncAt": payload.get("latestSyncAt"),
+        "latestAnalysisAt": payload.get("latestAnalysisAt"),
+        "lastError": payload.get("lastError"),
+    })

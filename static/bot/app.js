@@ -285,3 +285,109 @@ if (playgroundDateInput && !playgroundDateInput.value) {
 startSuggestionResearch('medium');
 document.getElementById('projections-form').requestSubmit();
 playgroundForm.requestSubmit();
+
+const agentSessionOutput = document.getElementById('agent-session-output');
+const agentLogsOutput = document.getElementById('agent-logs-output');
+const agentProposalsContainer = document.getElementById('agent-proposals');
+const agentStartButton = document.getElementById('agent-start');
+const agentStopButton = document.getElementById('agent-stop');
+
+async function postAgent(url) {
+  const response = await fetch(url, { method: 'POST' });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || 'Agent request failed');
+  }
+  return payload;
+}
+
+function renderAgentProposals(proposals) {
+  if (!agentProposalsContainer) return;
+  agentProposalsContainer.innerHTML = '';
+  if (!proposals.length) {
+    agentProposalsContainer.innerHTML = '<div class="card">No pending decisions.</div>';
+    return;
+  }
+
+  proposals.forEach((proposal) => {
+    const card = document.createElement('article');
+    card.className = 'card';
+    card.innerHTML = `
+      <h3>${proposal.symbol} · ${proposal.action}</h3>
+      <p>Size: ${proposal.size}</p>
+      <p>Estimated impact: ${proposal.expectedImpact}</p>
+      <p>Risk: ${proposal.riskSummary}</p>
+      <p>Confidence: ${proposal.confidence}</p>
+      <p>Why now: ${proposal.whyNow}</p>
+      <p>${proposal.explanation}</p>
+      <div class="inline-actions">
+        <button class="approve" data-id="${proposal.proposalId}">Yes</button>
+        <button class="reject secondary" data-id="${proposal.proposalId}">No</button>
+      </div>
+    `;
+    agentProposalsContainer.appendChild(card);
+  });
+}
+
+async function refreshAgentSection() {
+  if (!agentSessionOutput) return;
+  try {
+    const [sessionResp, proposalResp, logsResp] = await Promise.all([
+      fetch('/api/agent/session'),
+      fetch('/api/agent/proposals'),
+      fetch('/api/agent/logs'),
+    ]);
+    const sessionPayload = await sessionResp.json();
+    const proposalPayload = await proposalResp.json();
+    const logsPayload = await logsResp.json();
+    agentSessionOutput.textContent = JSON.stringify(sessionPayload, null, 2);
+    renderAgentProposals(proposalPayload.proposals || []);
+    agentLogsOutput.textContent = JSON.stringify(logsPayload.recentLogs || [], null, 2);
+  } catch (error) {
+    agentLogsOutput.textContent = `Error: ${error.message}`;
+  }
+}
+
+if (agentStartButton) {
+  agentStartButton.addEventListener('click', async () => {
+    try {
+      await postAgent('/api/agent/start');
+      await refreshAgentSection();
+    } catch (error) {
+      agentLogsOutput.textContent = `Error: ${error.message}`;
+    }
+  });
+}
+
+if (agentStopButton) {
+  agentStopButton.addEventListener('click', async () => {
+    try {
+      await postAgent('/api/agent/stop');
+      await refreshAgentSection();
+    } catch (error) {
+      agentLogsOutput.textContent = `Error: ${error.message}`;
+    }
+  });
+}
+
+if (agentProposalsContainer) {
+  agentProposalsContainer.addEventListener('click', async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const proposalId = target.dataset.id;
+    if (!proposalId) return;
+    const isApprove = target.classList.contains('approve');
+    const endpoint = isApprove
+      ? `/api/agent/proposals/${proposalId}/approve`
+      : `/api/agent/proposals/${proposalId}/reject`;
+    try {
+      await postAgent(endpoint);
+      await refreshAgentSection();
+    } catch (error) {
+      agentLogsOutput.textContent = `Error: ${error.message}`;
+    }
+  });
+}
+
+window.setInterval(refreshAgentSection, 4000);
+refreshAgentSection();
