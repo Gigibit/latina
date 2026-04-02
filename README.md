@@ -250,3 +250,33 @@ Run migrations after pulling changes:
 ```bash
 python manage.py migrate
 ```
+
+## Event-driven Agent Review Pipeline
+
+The Agent Review Trader now includes a bounded event-driven reasoning pipeline that **extends** deterministic scoring without replacing it.
+
+### Flow
+1. Market/portfolio updates emit events on a debounced `EventBus` (`PRICE_UPDATE`, `ORDERBOOK_UPDATE` when available, `BREAKOUT_DETECTED`, `VOLATILITY_CHANGE`, `PORTFOLIO_UPDATE`, `FEED_UPDATE`, `PROPOSAL_TTL_EXPIRE`, `PROPOSAL_INVALIDATION_TRIGGER`).
+2. `FeatureSnapshotBuilder` builds a normalized per-symbol snapshot and persists the latest snapshot.
+3. Deterministic provider fusion computes the base score.
+4. `LLMReasoningEngine` interprets the snapshot and returns bounded JSON fields (`confidence_adjustment` clamped to `[-0.3, +0.3]`, conflicts, uncertainty, risk note).
+5. `FusionEngine` combines deterministic + LLM signals; risk veto and stale data checks keep deterministic safety authority.
+6. Proposal lifecycle updates happen from events (create/update/expire/invalidate) while human approval and execution APIs remain unchanged.
+
+### Safety boundaries
+- LLM never executes orders.
+- LLM never bypasses approval.
+- LLM never overrides risk veto.
+- Fallback path enforces neutral adjustment when LLM fails/timeouts.
+
+### Observability
+Structured logs include:
+- `event_bus`
+- `snapshot_build`
+- `llm_call`
+- `llm_timeout/fallback`
+- `fusion`
+- `proposal_update`
+- `proposal_invalidation`
+
+Session payload exposes stream status, latest snapshots, and metrics (`events_sec`, `llm_latency_ms`, `llm_error_rate`, proposal counters, approval rate).

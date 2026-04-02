@@ -6,6 +6,7 @@ import logging
 import os
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -26,9 +27,14 @@ from trading_bot.bot.agent_signals import (
 from trading_bot.bot.attention_engine import AttentionEngine
 from trading_bot.bot.binance_adapter import build_binance_adapter
 from trading_bot.bot.etoro_adapter import build_etoro_adapter
+from trading_bot.bot.event_pipeline import (
+    EventBus,
+    FeatureSnapshotBuilder,
+    FusionEngine,
+    LLMReasoningEngine,
+)
 from trading_bot.bot.llm import LLMDecider
 from trading_bot.bot.micro_variation_engine import (
-    MICRO_PROPOSAL_ORIGIN,
     MicroVariationProposalEngine,
 )
 from trading_bot.bot.models import (
@@ -38,6 +44,7 @@ from trading_bot.bot.models import (
     AgentSession,
     ExecutionEvent,
     PortfolioSnapshot,
+    SymbolFeatureSnapshot,
 )
 
 logger = logging.getLogger(__name__)
@@ -107,6 +114,20 @@ class AgentRuntime:
         self._session: AgentSession | None = None
         self._last_prices: dict[str, float] = {}
         self._micro_engine: MicroVariationProposalEngine | None = None
+        self._event_bus: EventBus | None = None
+        self._snapshot_builder: FeatureSnapshotBuilder | None = None
+        self._llm_reasoner: LLMReasoningEngine | None = None
+        self._fusion_engine = FusionEngine()
+        self._metrics = {
+            "events_sec": 0.0,
+            "llm_latency_ms": 0,
+            "llm_error_rate": 0.0,
+            "proposals_created": 0,
+            "proposals_invalidated": 0,
+            "approval_rate": 0.0,
+        }
+        self._llm_calls = 0
+        self._llm_failures = 0
         self._market = market
         self._attention_engine = AttentionEngine()
 
@@ -135,6 +156,11 @@ class AgentRuntime:
                 return self._session
             self._config = load_agent_config()
             self._micro_engine = MicroVariationProposalEngine.from_env(self._log)
+            self._event_bus = EventBus(debounce_ms=int(os.getenv("EVENT_DEBOUNCE_MS", "100")))
+            self._snapshot_builder = FeatureSnapshotBuilder(
+                stale_after_ms=int(os.getenv("SNAPSHOT_STALE_AFTER_MS", "15000"))
+            )
+            self._llm_reasoner = LLMReasoningEngine(api_key=self._config.openai_api_key)
             self._session = AgentSession.objects.create(
                 status="STARTING",
                 worker_healthy=True,
@@ -185,6 +211,16 @@ class AgentRuntime:
         positions = latest_snapshot.positions if latest_snapshot else []
         logs_qs = AgentLog.objects.filter(session=session).order_by("-timestamp")
         logs = list(logs_qs.values("timestamp", "level", "category", "message", "ui_line")[:60])
+        snapshots_qs = SymbolFeatureSnapshot.objects.filter(session=session).order_by("-timestamp")
+        last_snapshots = {item.symbol: item.payload for item in snapshots_qs[:20]}
+        approval_count = AgentApproval.objects.filter(proposal__session=session).count()
+        approved_count = AgentApproval.objects.filter(
+            proposal__session=session,
+            approved=True,
+        ).count()
+        self._metrics["approval_rate"] = (
+            0.0 if approval_count == 0 else approved_count / approval_count
+        )
         return {
             "sessionId": str(session.session_id),
             "status": session.status,
@@ -207,9 +243,12 @@ class AgentRuntime:
             "lastError": session.last_error,
             "capabilities": session.capability_registry,
             "streamingConnected": session.streaming_connected,
+            "streamStatus": "active" if session.streaming_connected else "polling",
             "market": session.market,
             "lastFeedSync": session.last_feed_sync_at,
             "lastWatchlistSync": session.last_watchlist_sync_at,
+            "lastSnapshot": last_snapshots,
+            "metrics": self._metrics,
         }
 
     def proposals_payload(self) -> list[dict[str, Any]]:
@@ -238,6 +277,11 @@ class AgentRuntime:
                 "signalFreshness": item.signal_freshness,
                 "conflictFlags": item.conflict_flags,
                 "invalidationReason": item.invalidation_reason,
+                "interpretation": item.interpretation,
+                "riskNote": item.risk_note,
+                "uncertainty": item.uncertainty,
+                "confidenceAdjustment": item.confidence_adjustment,
+                "llmConflicts": item.llm_conflicts,
                 "sentimentSummary": item.sentiment_summary,
                 "attentionSummary": item.attention_summary,
                 "proposalOrigin": item.sentiment_summary.get("proposalOrigin", "core"),
@@ -249,6 +293,47 @@ class AgentRuntime:
             }
             for item in proposals
         ]
+
+    def _is_risk_veto(self, fused: dict[str, Any]) -> bool:
+        return fused.get("proposalType") == "REQUIRE_REVIEW"
+
+    def _invalidate_stale_proposals(self, symbol: str, event_id: str, reason: str) -> None:
+        assert self._session
+        updated = AgentProposal.objects.filter(
+            session=self._session,
+            status="pending_user",
+            symbol=symbol,
+        ).update(status="invalidated", invalidation_reason=reason)
+        if updated:
+            self._metrics["proposals_invalidated"] += updated
+            self._log(
+                "WARNING",
+                "proposal_invalidation",
+                "Proposal invalidated from event trigger",
+                symbol=symbol,
+                payload={"eventId": event_id, "reason": reason},
+            )
+
+    def _process_invalidation_triggers(
+        self,
+        symbol: str,
+        price_move_pct: float,
+        snapshot: dict[str, Any],
+        event_id: str,
+    ) -> None:
+        assert self._config
+        if abs(price_move_pct) >= self._config.proposal_invalidation_pct:
+            self._invalidate_stale_proposals(symbol, event_id, "price_left_entry_band")
+            return
+        spread = float(snapshot["microstructure"].get("spread", 0.0) or 0.0)
+        liquidity = float(snapshot["microstructure"].get("liquidity", 0.0) or 0.0)
+        short_term_vol = float(snapshot["microstructure"].get("shortTermVol", 0.0) or 0.0)
+        if short_term_vol >= self._config.proposal_invalidation_pct:
+            self._invalidate_stale_proposals(symbol, event_id, "volatility_spike")
+        if spread > 1.5:
+            self._invalidate_stale_proposals(symbol, event_id, "spread_deterioration")
+        if liquidity < 0:
+            self._invalidate_stale_proposals(symbol, event_id, "liquidity_deterioration")
 
     def _build_provider_scores(self, provider_results: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -606,6 +691,18 @@ class AgentRuntime:
                     payload={"positions": len(positions), "openOrders": len(orders)},
                 )
 
+                expired_count = AgentProposal.objects.filter(
+                    session=self._session,
+                    status="pending_user",
+                    expires_at__lte=now,
+                ).update(status="expired")
+                if expired_count:
+                    self._log(
+                        "INFO",
+                        "proposal_invalidation",
+                        "Proposal TTL expired",
+                        payload={"reason": "PROPOSAL_TTL_EXPIRE", "count": expired_count},
+                    )
                 self._invalidation_pass(now=now, account=account)
 
                 pending_qs = AgentProposal.objects.filter(
@@ -657,9 +754,102 @@ class AgentRuntime:
                         price_move_pct=price_move_pct,
                         fresh_market_data=True,
                     )
+                    fused["priceMovePct"] = price_move_pct
+                    event_types = [
+                        "PORTFOLIO_UPDATE",
+                        "FEED_UPDATE",
+                        "PRICE_UPDATE",
+                        "VOLATILITY_CHANGE",
+                    ]
+                    if fused.get("proposalType") in {"BUY_CANDIDATE", "SELL_CANDIDATE"}:
+                        event_types.append("BREAKOUT_DETECTED")
+                    for event_type in event_types:
+                        event_id = str(uuid.uuid4())
+                        if self._event_bus:
+                            self._event_bus.publish(
+                                event_type=event_type,
+                                symbol=symbol,
+                                payload={"eventId": event_id, "snapshotHash": snapshot_hash},
+                            )
+
+                    assert self._snapshot_builder and self._llm_reasoner
+                    event_id = str(uuid.uuid4())
+                    snapshot = self._snapshot_builder.build(
+                        symbol=symbol,
+                        event_id=event_id,
+                        provider_results=provider_results,
+                        fused=fused,
+                        account=account,
+                        positions=positions,
+                    )
+                    snapshot_hash_key = self._snapshot_builder.snapshot_hash(snapshot)
+                    SymbolFeatureSnapshot.objects.update_or_create(
+                        session=self._session,
+                        symbol=symbol,
+                        defaults={
+                            "event_id": event_id,
+                            "snapshot_hash": snapshot_hash_key,
+                            "payload": snapshot,
+                        },
+                    )
+                    if snapshot["freshness"]["isStale"]:
+                        self._log(
+                            "WARNING",
+                            "proposal_invalidation",
+                            "Snapshot stale, proposal blocked",
+                            symbol=symbol,
+                            payload={"eventId": event_id, "snapshotHash": snapshot_hash_key},
+                        )
+                        self._invalidate_stale_proposals(
+                            symbol=symbol,
+                            event_id=event_id,
+                            reason="stale_snapshot",
+                        )
+                    self._process_invalidation_triggers(
+                        symbol=symbol,
+                        price_move_pct=price_move_pct,
+                        snapshot=snapshot,
+                        event_id=event_id,
+                    )
+                    deterministic_score = float(fused.get("confidenceScore", 0.0))
+                    llm_started = time.perf_counter()
+                    self._llm_calls += 1
+                    llm_result = self._llm_reasoner.interpret(
+                        symbol=symbol,
+                        snapshot=snapshot,
+                        deterministic_score=deterministic_score,
+                    )
+                    self._metrics["llm_latency_ms"] = int(
+                        (time.perf_counter() - llm_started) * 1000
+                    )
+                    if "fallback" in llm_result.get("risk_note", "").lower():
+                        self._llm_failures += 1
+                    self._metrics["llm_error_rate"] = (
+                        0.0 if self._llm_calls == 0 else self._llm_failures / self._llm_calls
+                    )
+                    fusion = self._fusion_engine.combine(
+                        base_score=deterministic_score,
+                        llm_result=llm_result,
+                        risk_veto=self._is_risk_veto(fused),
+                        is_stale=snapshot["freshness"]["isStale"],
+                    )
+                    self._log(
+                        "INFO",
+                        "fusion",
+                        "Deterministic + llm fusion completed",
+                        symbol=symbol,
+                        payload={
+                            "eventId": event_id,
+                            "snapshotHash": snapshot_hash_key,
+                            "proposalScore": fusion["proposalScore"],
+                        },
+                    )
                     drafted = self._draft_from_fusion(symbol, positions, fused)
                     provider_scores = self._build_provider_scores(provider_results)
                     ai = self._openai_synthesis(symbol, provider_scores, fused)
+                    threshold = 0.3 if llm_result.get("uncertainty") != "high" else 0.5
+                    if fusion["proposalScore"] < threshold:
+                        drafted["action"] = "HOLD"
                     new_candidates.append(
                         {
                             "symbol": drafted["symbol"],
@@ -674,10 +864,16 @@ class AgentRuntime:
                             "expires_at": now
                             + timedelta(milliseconds=self._config.approval_timeout_ms),
                             "provider_scores": provider_scores,
+                            "interpretation": llm_result["interpretation"],
+                            "risk_note": llm_result["risk_note"],
+                            "uncertainty": llm_result["uncertainty"],
+                            "confidence_adjustment": llm_result["confidence_adjustment"],
+                            "llm_conflicts": llm_result["conflicts"],
+                            "snapshot_hash_key": snapshot_hash_key,
                             "signal_freshness": {
                                 key: value.freshness for key, value in provider_results.items()
                             },
-                            "conflict_flags": fused["conflictFlags"],
+                            "conflict_flags": fused["conflictFlags"] + llm_result["conflicts"],
                             "invalidation_reason": (
                                 "material_price_move"
                                 if "proposal_invalidated_material_price_move"
@@ -766,6 +962,7 @@ class AgentRuntime:
                             symbol=candidate["symbol"],
                             action=candidate["action"],
                             status="pending_user",
+                            snapshot_hash_key=candidate.get("snapshot_hash_key", ""),
                         ).exists()
                         if duplicate:
                             self._log(
@@ -796,6 +993,12 @@ class AgentRuntime:
                             conflict_flags=candidate["conflict_flags"],
                             invalidation_reason=candidate["invalidation_reason"],
                             sentiment_summary=candidate["sentiment_summary"],
+                            interpretation=candidate.get("interpretation", ""),
+                            risk_note=candidate.get("risk_note", ""),
+                            uncertainty=candidate.get("uncertainty", "medium"),
+                            confidence_adjustment=candidate.get("confidence_adjustment", 0.0),
+                            llm_conflicts=candidate.get("llm_conflicts", []),
+                            snapshot_hash_key=candidate.get("snapshot_hash_key", ""),
                             attention_summary=candidate.get("attention_summary", {}),
                         )
                         category = (
@@ -806,7 +1009,7 @@ class AgentRuntime:
                         )
                         self._log(
                             "INFO",
-                            category,
+                            "proposal_update",
                             "New proposal pending approval",
                             proposal=proposal,
                             symbol=proposal.symbol,
@@ -817,6 +1020,13 @@ class AgentRuntime:
                         )
 
                 self._session.latest_analysis_at = timezone.now()
+                if self._event_bus:
+                    bus_metrics = self._event_bus.metrics()
+                    self._metrics["events_sec"] = round(
+                        bus_metrics.get("events_dispatched", 0)
+                        / max(self._config.loop_interval_ms / 1000, 1),
+                        2,
+                    )
                 waiting = AgentProposal.objects.filter(
                     session=self._session,
                     status="pending_user",
