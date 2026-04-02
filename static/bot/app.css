@@ -162,6 +162,16 @@ button {
   gap: .6rem;
 }
 
+.badge {
+  display: inline-block;
+  margin-left: .4rem;
+  padding: .15rem .45rem;
+  border-radius: 999px;
+  background: #23395d;
+  color: #fff;
+  font-size: .7rem;
+}
+
 .secondary {
   background: #f8fafc;
   color: #334155;

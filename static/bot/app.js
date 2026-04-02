@@ -314,8 +314,10 @@ function renderAgentProposals(proposals) {
   proposals.forEach((proposal) => {
     const card = document.createElement('article');
     card.className = 'card';
+    const isMicro = proposal.proposalOrigin === 'micro';
+    const microMetrics = proposal.microMetrics || {};
     card.innerHTML = `
-      <h3>${proposal.symbol} · ${proposal.action}</h3>
+      <h3>${proposal.symbol} · ${proposal.action} ${isMicro ? '<span class="badge">MICRO</span>' : ''}</h3>
       <p>Position impact: ${proposal.size}</p>
       <p>Confidence: ${proposal.confidence}</p>
       <p>Technical score: ${proposal.providerScores?.technical?.score ?? '-'}</p>
@@ -323,6 +325,11 @@ function renderAgentProposals(proposals) {
       <p>Sentiment score: ${proposal.providerScores?.social_sentiment?.score ?? '-'}</p>
       <p>Watchlist/attention score: ${proposal.providerScores?.watchlist_interest?.score ?? '-'}</p>
       <p>Conflict flags: ${(proposal.conflictFlags || []).join(', ') || 'none'}</p>
+      ${isMicro ? `<p>localLow: ${microMetrics.localLow ?? '-'}</p>` : ''}
+      ${isMicro ? `<p>localHigh: ${microMetrics.localHigh ?? '-'}</p>` : ''}
+      ${isMicro ? `<p>microRange: ${microMetrics.microRange ?? '-'}</p>` : ''}
+      ${isMicro ? `<p>expectedEdge: ${microMetrics.expectedEdge ?? '-'}</p>` : ''}
+      ${isMicro ? `<p>ttlRemaining: ${proposal.ttlRemaining ?? '-'}s</p>` : ''}
       <p>Why now: ${proposal.whyNow}</p>
       <p>${proposal.explanation}</p>
       <div class="inline-actions">
