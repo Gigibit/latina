@@ -44,6 +44,12 @@ class AgentProposal(models.Model):
     conflict_flags = models.JSONField(default=list)
     invalidation_reason = models.TextField(blank=True)
     sentiment_summary = models.JSONField(default=dict)
+    interpretation = models.TextField(default="")
+    risk_note = models.TextField(default="")
+    uncertainty = models.CharField(max_length=16, default="medium")
+    confidence_adjustment = models.FloatField(default=0.0)
+    llm_conflicts = models.JSONField(default=list)
+    snapshot_hash_key = models.CharField(max_length=128, default="")
 
 
 class AgentApproval(models.Model):
@@ -86,3 +92,19 @@ class ExecutionEvent(models.Model):
     event_type = models.CharField(max_length=32)
     status = models.CharField(max_length=24)
     payload = models.JSONField(default=dict)
+
+
+class SymbolFeatureSnapshot(models.Model):
+    session = models.ForeignKey(
+        AgentSession,
+        on_delete=models.CASCADE,
+        related_name="feature_snapshots",
+    )
+    symbol = models.CharField(max_length=16)
+    timestamp = models.DateTimeField(auto_now=True)
+    event_id = models.CharField(max_length=128)
+    snapshot_hash = models.CharField(max_length=128)
+    payload = models.JSONField(default=dict)
+
+    class Meta:
+        unique_together = ("session", "symbol")
