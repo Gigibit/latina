@@ -106,3 +106,45 @@ When action is `HOLD`, the API call is skipped and cooldown still gets updated i
 - `BINANCE_CRYPTO_API_KEY` enables experimental crypto market analysis in `/api/market-monitor/`.
 - `CRYPTO_MARKET_PROVIDER` currently accepts only `binance` (default: `binance`).
 - `CRYPTO_MARKET_SYMBOLS` comma-separated Binance symbols to evaluate (default: `BTCUSDT,ETHUSDT,BNBUSDT`).
+
+## Agent Review Trader (human-in-the-loop)
+
+New tab **Agent Review Trader** provides a strict approval workflow:
+
+- Start/Stop agent runtime (`POST /api/agent/start`, `POST /api/agent/stop`)
+- Poll session and health (`GET /api/agent/session`, `GET /api/agent/health`)
+- Review pending decisions (`GET /api/agent/proposals`)
+- Explicit approval only via user click (`POST /api/agent/proposals/:id/approve`)
+- Explicit rejection (`POST /api/agent/proposals/:id/reject`)
+- Logs and portfolio snapshots (`GET /api/agent/logs`, `GET /api/agent/portfolio`)
+
+### Required env vars for Agent Review Trader
+
+- `ETORO_API_KEY`
+- `OPENAI_API_KEY`
+- `MAX_AGENT_LOSS`
+
+Optional:
+
+- `AGENT_LOOP_INTERVAL_MS`
+- `APPROVAL_TIMEOUT_MS`
+- `MAX_OPEN_PROPOSALS`
+- `MAX_POSITION_SIZE`
+- `MAX_DAILY_TRADES`
+
+### Data persistence
+
+The runtime stores:
+
+- `agent_sessions`
+- `agent_logs`
+- `agent_proposals`
+- `agent_approvals`
+- `portfolio_snapshots`
+- `execution_events`
+
+Run migrations after pulling changes:
+
+```bash
+python manage.py migrate
+```

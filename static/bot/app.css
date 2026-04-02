@@ -156,3 +156,17 @@ button {
   font-size: 18px;
   font-family: Inter, system-ui, sans-serif;
 }
+
+.inline-actions {
+  display: flex;
+  gap: .6rem;
+}
+
+.secondary {
+  background: #f8fafc;
+  color: #334155;
+}
+
+.compact {
+  min-height: 120px;
+}
