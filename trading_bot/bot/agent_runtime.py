@@ -24,6 +24,10 @@ from trading_bot.bot.agent_signals import (
 )
 from trading_bot.bot.etoro_adapter import build_etoro_adapter
 from trading_bot.bot.llm import LLMDecider
+from trading_bot.bot.micro_variation_engine import (
+    MICRO_PROPOSAL_ORIGIN,
+    MicroVariationProposalEngine,
+)
 from trading_bot.bot.models import (
     AgentApproval,
     AgentLog,
@@ -99,6 +103,7 @@ class AgentRuntime:
         self._config: AgentConfig | None = None
         self._session: AgentSession | None = None
         self._last_prices: dict[str, float] = {}
+        self._micro_engine: MicroVariationProposalEngine | None = None
 
     def _log(self, level: str, category: str, message: str, **kwargs: Any) -> None:
         if not self._session:
@@ -124,6 +129,7 @@ class AgentRuntime:
             if self._thread and self._thread.is_alive() and self._session:
                 return self._session
             self._config = load_agent_config()
+            self._micro_engine = MicroVariationProposalEngine.from_env(self._log)
             self._session = AgentSession.objects.create(
                 status="STARTING",
                 worker_healthy=True,
@@ -226,9 +232,27 @@ class AgentRuntime:
                 "conflictFlags": item.conflict_flags,
                 "invalidationReason": item.invalidation_reason,
                 "sentimentSummary": item.sentiment_summary,
+                "proposalOrigin": item.sentiment_summary.get("proposalOrigin", "core"),
+                "microMetrics": item.provider_scores.get("micro_variation", {}),
+                "ttlRemaining": max(
+                    int((item.expires_at - timezone.now()).total_seconds()),
+                    0,
+                ),
             }
             for item in proposals
         ]
+
+    def _build_provider_scores(self, provider_results: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: {
+                "score": value.score,
+                "confidence": value.confidence,
+                "freshness": value.freshness,
+                "rationale": value.rationale,
+                "warnings": value.warnings,
+            }
+            for key, value in provider_results.items()
+        }
 
     def approve(self, proposal_id: str) -> dict[str, Any]:
         if not self._session:
@@ -460,7 +484,7 @@ class AgentRuntime:
             )
 
     def _loop(self) -> None:
-        assert self._session and self._config
+        assert self._session and self._config and self._micro_engine
         self._session.started_at = timezone.now()
         self._session.status = "RUNNING"
         self._session.save(update_fields=["started_at", "status"])
@@ -528,11 +552,14 @@ class AgentRuntime:
                     expires_at__lte=now,
                 ).update(status="expired")
 
-                pending = AgentProposal.objects.filter(
+                pending_qs = AgentProposal.objects.filter(
                     session=self._session,
                     status="pending_user",
-                ).count()
-                if pending < self._config.max_open_proposals:
+                )
+                pending = pending_qs.count()
+                available_slots = self._config.max_open_proposals - pending
+                if available_slots > 0:
+                    new_candidates: list[dict[str, Any]] = []
                     symbols = [
                         str(item.get("symbol", "")).upper()
                         for item in positions
@@ -547,12 +574,10 @@ class AgentRuntime:
                         history,
                         capabilities,
                     )
-
                     provider_results = {
                         name: provider.collect(symbol=symbol, context=context)
                         for name, provider in providers.items()
                     }
-
                     latest_price = float(account.get("equity", 0) or 0)
                     previous_price = self._last_prices.get(symbol, latest_price)
                     price_move_pct = (
@@ -561,68 +586,166 @@ class AgentRuntime:
                         else ((latest_price - previous_price) / abs(previous_price)) * 100
                     )
                     self._last_prices[symbol] = latest_price
-
                     fused = fuse_signals(
                         provider_results,
                         price_move_pct=price_move_pct,
                         fresh_market_data=True,
                     )
                     drafted = self._draft_from_fusion(symbol, positions, fused)
-                    duplicate = AgentProposal.objects.filter(
-                        session=self._session,
-                        symbol=drafted["symbol"],
-                        action=drafted["action"],
-                        status="pending_user",
-                    ).exists()
-                    if not duplicate:
-                        provider_scores = {
-                            key: {
-                                "score": value.score,
-                                "confidence": value.confidence,
-                                "freshness": value.freshness,
-                                "rationale": value.rationale,
-                                "warnings": value.warnings,
-                            }
-                            for key, value in provider_results.items()
-                        }
-                        ai = self._openai_synthesis(symbol, provider_scores, fused)
-                        proposal = AgentProposal.objects.create(
-                            session=self._session,
-                            symbol=drafted["symbol"],
-                            action=drafted["action"],
-                            size=drafted["size"],
-                            rationale=drafted["rationale"],
-                            risk_summary=drafted["risk_summary"],
-                            explanation=ai["explanation"],
-                            confidence=float(ai["confidence"]),
-                            expected_impact=ai["trade_offs"],
-                            why_now=ai["why_now"],
-                            expires_at=now
+                    provider_scores = self._build_provider_scores(provider_results)
+                    ai = self._openai_synthesis(symbol, provider_scores, fused)
+                    new_candidates.append(
+                        {
+                            "symbol": drafted["symbol"],
+                            "action": drafted["action"],
+                            "size": drafted["size"],
+                            "rationale": drafted["rationale"],
+                            "risk_summary": drafted["risk_summary"],
+                            "explanation": ai["explanation"],
+                            "confidence": float(ai["confidence"]),
+                            "expected_impact": ai["trade_offs"],
+                            "why_now": ai["why_now"],
+                            "expires_at": now
                             + timedelta(milliseconds=self._config.approval_timeout_ms),
-                            status="pending_user",
-                            snapshot_hash=snapshot_hash,
-                            provider_scores=provider_scores,
-                            signal_freshness={
+                            "provider_scores": provider_scores,
+                            "signal_freshness": {
                                 key: value.freshness for key, value in provider_results.items()
                             },
-                            conflict_flags=fused["conflictFlags"],
-                            invalidation_reason=(
+                            "conflict_flags": fused["conflictFlags"],
+                            "invalidation_reason": (
                                 "material_price_move"
                                 if "proposal_invalidated_material_price_move"
                                 in fused["conflictFlags"]
                                 else ""
                             ),
-                            sentiment_summary=provider_results[
+                            "sentiment_summary": provider_results[
                                 "social_sentiment"
                             ].raw_inputs.get("summary", {}),
+                            "decision_path": ["core_signal_fusion"],
+                        }
+                    )
+
+                    core_symbols = {candidate["symbol"] for candidate in new_candidates}
+                    pending_symbols = set(
+                        pending_qs.values_list("symbol", flat=True)
+                    )
+                    try:
+                        def build_micro_context(
+                            candidate_symbol: str,
+                            account: dict[str, Any] = account,
+                            positions: list[dict[str, Any]] = positions,
+                            history: list[dict[str, Any]] = history,
+                            capabilities: dict[str, bool] = capabilities,
+                        ) -> dict[str, Any]:
+                            return self._build_signal_context(
+                                adapter,
+                                candidate_symbol,
+                                account=account,
+                                positions=positions,
+                                history=history,
+                                capabilities=capabilities,
+                            )
+
+                        micro_candidates = self._micro_engine.generate(
+                            session=self._session,
+                            now=now,
+                            account=account,
+                            positions=positions,
+                            history=history,
+                            capabilities=capabilities,
+                            providers=providers,
+                            build_context=build_micro_context,
+                            draft_from_fusion=self._draft_from_fusion,
+                            openai_synthesis=self._openai_synthesis,
+                            last_prices=self._last_prices,
+                            max_agent_loss=self._config.max_agent_loss,
+                            core_symbols=core_symbols,
+                            pending_symbols=pending_symbols,
+                        )
+                    except Exception as exc:
+                        logger.error("micro_engine failed: %s", exc)
+                        self._log(
+                            "ERROR",
+                            "micro_engine",
+                            "Micro engine failure",
+                            payload={"error": str(exc), "reason": "engine_error"},
+                        )
+                        micro_candidates = []
+
+                    merged_candidates = new_candidates + micro_candidates
+                    deduped_candidates: list[dict[str, Any]] = []
+                    seen_symbols: set[str] = set()
+                    for candidate in merged_candidates:
+                        if candidate["symbol"] in seen_symbols:
+                            self._log(
+                                "INFO",
+                                "micro_dedup",
+                                "Candidate symbol deduplicated",
+                                symbol=candidate["symbol"],
+                                payload={
+                                    "reason": "merge_dedup",
+                                    "decisionPath": candidate.get("decision_path", []),
+                                },
+                            )
+                            continue
+                        seen_symbols.add(candidate["symbol"])
+                        deduped_candidates.append(candidate)
+                        if len(deduped_candidates) >= available_slots:
+                            break
+
+                    for candidate in deduped_candidates:
+                        duplicate = AgentProposal.objects.filter(
+                            session=self._session,
+                            symbol=candidate["symbol"],
+                            action=candidate["action"],
+                            status="pending_user",
+                        ).exists()
+                        if duplicate:
+                            self._log(
+                                "INFO",
+                                "micro_dedup",
+                                "Proposal already pending",
+                                symbol=candidate["symbol"],
+                                payload={"reason": "pending_duplicate", "decisionPath": ["db"]},
+                            )
+                            continue
+
+                        proposal = AgentProposal.objects.create(
+                            session=self._session,
+                            symbol=candidate["symbol"],
+                            action=candidate["action"],
+                            size=candidate["size"],
+                            rationale=candidate["rationale"],
+                            risk_summary=candidate["risk_summary"],
+                            explanation=candidate["explanation"],
+                            confidence=candidate["confidence"],
+                            expected_impact=candidate["expected_impact"],
+                            why_now=candidate["why_now"],
+                            expires_at=candidate["expires_at"],
+                            status="pending_user",
+                            snapshot_hash=snapshot_hash,
+                            provider_scores=candidate["provider_scores"],
+                            signal_freshness=candidate["signal_freshness"],
+                            conflict_flags=candidate["conflict_flags"],
+                            invalidation_reason=candidate["invalidation_reason"],
+                            sentiment_summary=candidate["sentiment_summary"],
+                        )
+                        category = (
+                            "micro_engine"
+                            if candidate["sentiment_summary"].get("proposalOrigin")
+                            == MICRO_PROPOSAL_ORIGIN
+                            else "signal_fusion"
                         )
                         self._log(
                             "INFO",
-                            "signal_fusion",
+                            category,
                             "New proposal pending approval",
                             proposal=proposal,
                             symbol=proposal.symbol,
-                            payload={"fused": fused, "provider_scores": provider_scores},
+                            payload={
+                                "provider_scores": candidate["provider_scores"],
+                                "decisionPath": candidate.get("decision_path", []),
+                            },
                         )
 
                 self._session.latest_analysis_at = timezone.now()
