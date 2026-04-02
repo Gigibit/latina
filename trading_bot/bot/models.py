@@ -16,6 +16,10 @@ class AgentSession(models.Model):
     worker_healthy = models.BooleanField(default=False)
     last_error = models.TextField(blank=True)
     metadata = models.JSONField(default=dict)
+    capability_registry = models.JSONField(default=dict)
+    streaming_connected = models.BooleanField(default=False)
+    last_feed_sync_at = models.DateTimeField(null=True, blank=True)
+    last_watchlist_sync_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
 
@@ -35,6 +39,11 @@ class AgentProposal(models.Model):
     expires_at = models.DateTimeField()
     status = models.CharField(max_length=24, default="drafted")
     snapshot_hash = models.CharField(max_length=128)
+    provider_scores = models.JSONField(default=dict)
+    signal_freshness = models.JSONField(default=dict)
+    conflict_flags = models.JSONField(default=list)
+    invalidation_reason = models.TextField(blank=True)
+    sentiment_summary = models.JSONField(default=dict)
 
 
 class AgentApproval(models.Model):

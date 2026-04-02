@@ -462,20 +462,44 @@ def agent_stop_view(request):
 
 @require_GET
 def agent_session_view(request):
-    return JsonResponse(agent_runtime.session_payload())
+    try:
+        return JsonResponse(agent_runtime.session_payload())
+    except Exception as exc:
+        logger.error(
+            "Response agent_session_view status=500 message=Failed to read agent session error=%s",
+            exc,
+        )
+        logger.exception("Response agent_session_view status=500 error=%s", exc)
+        return JsonResponse({"error": str(exc)}, status=500)
 
 
 @require_GET
 def agent_logs_view(request):
-    payload = agent_runtime.session_payload()
-    return JsonResponse(
-        {"sessionId": payload.get("sessionId"), "recentLogs": payload.get("recentLogs", [])}
-    )
+    try:
+        payload = agent_runtime.session_payload()
+        return JsonResponse(
+            {"sessionId": payload.get("sessionId"), "recentLogs": payload.get("recentLogs", [])}
+        )
+    except Exception as exc:
+        logger.error(
+            "Response agent_logs_view status=500 message=Failed to read agent logs error=%s",
+            exc,
+        )
+        logger.exception("Response agent_logs_view status=500 error=%s", exc)
+        return JsonResponse({"error": str(exc)}, status=500)
 
 
 @require_GET
 def agent_proposals_view(request):
-    return JsonResponse({"proposals": agent_runtime.proposals_payload()})
+    try:
+        return JsonResponse({"proposals": agent_runtime.proposals_payload()})
+    except Exception as exc:
+        logger.error(
+            "Response agent_proposals_view status=500 message=Failed to read proposals error=%s",
+            exc,
+        )
+        logger.exception("Response agent_proposals_view status=500 error=%s", exc)
+        return JsonResponse({"error": str(exc)}, status=500)
 
 
 @require_http_methods(["POST"])
@@ -508,28 +532,49 @@ def agent_reject_view(request, proposal_id: str):
 
 @require_GET
 def agent_portfolio_view(request):
-    payload = agent_runtime.session_payload()
-    return JsonResponse({
-        "sessionId": payload.get("sessionId"),
-        "portfolioSummary": payload.get("portfolioSummary", {}),
-        "cash": payload.get("cash"),
-        "openPositions": payload.get("openPositions"),
-        "unrealizedPnL": payload.get("unrealizedPnL"),
-        "realizedPnL": payload.get("realizedPnL"),
-        "drawdown": payload.get("drawdown"),
-        "riskLevel": payload.get("riskLevel"),
-    })
+    try:
+        payload = agent_runtime.session_payload()
+        return JsonResponse({
+            "sessionId": payload.get("sessionId"),
+            "portfolioSummary": payload.get("portfolioSummary", {}),
+            "cash": payload.get("cash"),
+            "openPositions": payload.get("openPositions"),
+            "unrealizedPnL": payload.get("unrealizedPnL"),
+            "realizedPnL": payload.get("realizedPnL"),
+            "drawdown": payload.get("drawdown"),
+            "riskLevel": payload.get("riskLevel"),
+            "capabilities": payload.get("capabilities", {}),
+            "streamingConnected": payload.get("streamingConnected", False),
+        })
+    except Exception as exc:
+        logger.error(
+            "Response agent_portfolio_view status=500 message=Failed to read portfolio error=%s",
+            exc,
+        )
+        logger.exception("Response agent_portfolio_view status=500 error=%s", exc)
+        return JsonResponse({"error": str(exc)}, status=500)
 
 
 @require_GET
 def agent_health_view(request):
-    payload = agent_runtime.session_payload()
-    return JsonResponse({
-        "sessionId": payload.get("sessionId"),
-        "status": payload.get("status"),
-        "heartbeatAt": payload.get("heartbeatAt"),
-        "workerHealthy": payload.get("workerHealthy"),
-        "latestSyncAt": payload.get("latestSyncAt"),
-        "latestAnalysisAt": payload.get("latestAnalysisAt"),
-        "lastError": payload.get("lastError"),
-    })
+    try:
+        payload = agent_runtime.session_payload()
+        return JsonResponse({
+            "sessionId": payload.get("sessionId"),
+            "status": payload.get("status"),
+            "heartbeatAt": payload.get("heartbeatAt"),
+            "workerHealthy": payload.get("workerHealthy"),
+            "latestSyncAt": payload.get("latestSyncAt"),
+            "latestAnalysisAt": payload.get("latestAnalysisAt"),
+            "lastError": payload.get("lastError"),
+            "lastFeedSync": payload.get("lastFeedSync"),
+            "lastWatchlistSync": payload.get("lastWatchlistSync"),
+            "streamingConnected": payload.get("streamingConnected", False),
+        })
+    except Exception as exc:
+        logger.error(
+            "Response agent_health_view status=500 message=Failed to read health error=%s",
+            exc,
+        )
+        logger.exception("Response agent_health_view status=500 error=%s", exc)
+        return JsonResponse({"error": str(exc)}, status=500)

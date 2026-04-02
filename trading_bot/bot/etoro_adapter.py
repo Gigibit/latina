@@ -49,6 +49,31 @@ class EtoroAdapter:
         payload = self._request("GET", "/portfolio/history")
         return payload.get("history", payload if isinstance(payload, list) else [])
 
+    def getWatchlists(self) -> list[dict[str, Any]]:
+        payload = self._request("GET", "/watchlists")
+        return payload.get("watchlists", payload if isinstance(payload, list) else [])
+
+    def getCuratedLists(self) -> list[dict[str, Any]]:
+        payload = self._request("GET", "/lists/curated")
+        return payload.get("lists", payload if isinstance(payload, list) else [])
+
+    def getInstrumentFeedPosts(self, *, symbol: str, limit: int = 25) -> list[dict[str, Any]]:
+        payload = self._request("GET", f"/feeds/instruments/{symbol}?limit={limit}")
+        return payload.get("posts", payload if isinstance(payload, list) else [])
+
+    def getUserFeedPosts(self, *, limit: int = 25) -> list[dict[str, Any]]:
+        payload = self._request("GET", f"/feeds/users/me?limit={limit}")
+        return payload.get("posts", payload if isinstance(payload, list) else [])
+
+    def getSocialAnalytics(self, *, symbol: str) -> dict[str, Any]:
+        return self._request("GET", f"/social/analytics/{symbol}")
+
+    def getAgentPortfolioCompatibility(self) -> dict[str, Any]:
+        return self._request("GET", "/agent-portfolios/compatibility")
+
+    def streamMarketMonitor(self) -> None:
+        logger.info("streamMarketMonitor invoked in polling fallback mode")
+
     def placeOrder(
         self,
         *,

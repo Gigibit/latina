@@ -131,6 +131,108 @@ Optional:
 - `MAX_OPEN_PROPOSALS`
 - `MAX_POSITION_SIZE`
 - `MAX_DAILY_TRADES`
+- `PROPOSAL_INVALIDATION_PCT` (default `1.5`)
+
+### Capability registry and feature flags
+
+At startup the agent builds a runtime capability registry and stores it in session payload:
+
+- `supportsFeeds`
+- `supportsSocialAnalytics`
+- `supportsCuratedLists`
+- `supportsWatchlists`
+- `supportsMarketMonitorStreaming`
+- `supportsAgentPortfolios`
+- `supportsDemoTrading`
+- `supportsRealTrading`
+
+Each capability can be force-enabled/disabled through env flags:
+
+- `ETORO_CAP_SUPPORTS_FEEDS`
+- `ETORO_CAP_SUPPORTS_SOCIAL_ANALYTICS`
+- `ETORO_CAP_SUPPORTS_CURATED_LISTS`
+- `ETORO_CAP_SUPPORTS_WATCHLISTS`
+- `ETORO_CAP_SUPPORTS_MARKET_MONITOR_STREAMING`
+- `ETORO_CAP_SUPPORTS_AGENT_PORTFOLIOS`
+- `ETORO_CAP_SUPPORTS_DEMO_TRADING`
+- `ETORO_CAP_SUPPORTS_REAL_TRADING`
+
+### Multi-signal architecture
+
+The Agent Review Trader now uses modular signal providers:
+
+1. `TechnicalSignalProvider` (dominant signal)
+2. `PortfolioRiskProvider`
+3. `MarketRegimeProvider`
+4. `FeedSentimentProvider` (auxiliary only)
+5. `WatchlistAttentionProvider` (auxiliary only)
+6. `CuratedListProvider` (auxiliary only)
+
+Each provider returns:
+
+- `score`
+- `confidence`
+- `freshness`
+- `rationale`
+- `raw_inputs`
+- `warnings`
+
+The fusion engine applies weighted synthesis:
+
+- `technical_score = 0.60`
+- `portfolio_risk_score = 0.20`
+- `market_regime_score = 0.10`
+- `social_sentiment_score = 0.05`
+- `watchlist_interest_score = 0.05`
+
+Safety rules enforced:
+
+- no action without explicit approval
+- sentiment never dominates technical analysis
+- risk can veto opportunities (`REQUIRE_REVIEW`)
+- stale or materially moved market can invalidate pending proposals
+- duplicate pending proposals are suppressed
+
+### Proposal types
+
+Supported proposal semantics:
+
+- `BUY_CANDIDATE`
+- `SELL_CANDIDATE`
+- `REDUCE_CANDIDATE`
+- `CLOSE_CANDIDATE`
+- `HOLD`
+- `WATCH`
+- `INVALIDATE_PENDING`
+- `REQUIRE_REVIEW`
+
+### OpenAI synthesis layer
+
+OpenAI is used for explainability only:
+
+- recommendation synthesis across heterogeneous providers
+- “why now” summary
+- conflict explanation
+- uncertainty signaling
+
+OpenAI never sends orders directly.
+
+### Agent session and proposal API expansion
+
+`GET /api/agent/session` now includes:
+
+- capability flags (`capabilities`)
+- `streamingConnected`
+- `lastFeedSync`
+- `lastWatchlistSync`
+
+`GET /api/agent/proposals` now includes per proposal:
+
+- `providerScores`
+- `signalFreshness`
+- `conflictFlags`
+- `invalidationReason`
+- `sentimentSummary`
 
 ### Data persistence
 
