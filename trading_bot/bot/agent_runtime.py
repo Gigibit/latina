@@ -12,6 +12,16 @@ from typing import Any
 
 from django.utils import timezone
 
+from trading_bot.bot.agent_signals import (
+    CuratedListProvider,
+    FeedSentimentProvider,
+    MarketRegimeProvider,
+    PortfolioRiskProvider,
+    TechnicalSignalProvider,
+    WatchlistAttentionProvider,
+    detect_capabilities,
+    fuse_signals,
+)
 from trading_bot.bot.etoro_adapter import build_etoro_adapter
 from trading_bot.bot.llm import LLMDecider
 from trading_bot.bot.models import (
@@ -26,6 +36,12 @@ from trading_bot.bot.models import (
 logger = logging.getLogger(__name__)
 
 WRITE_ACTIONS = {"BUY", "SELL", "REDUCE", "CLOSE", "CANCEL_ORDER"}
+EXECUTION_ACTIONS = {
+    "BUY_CANDIDATE": "BUY",
+    "SELL_CANDIDATE": "SELL",
+    "REDUCE_CANDIDATE": "REDUCE",
+    "CLOSE_CANDIDATE": "CLOSE",
+}
 
 
 @dataclass
@@ -38,6 +54,7 @@ class AgentConfig:
     max_open_proposals: int
     max_position_size: float
     max_daily_trades: int
+    proposal_invalidation_pct: float
 
 
 def load_agent_config() -> AgentConfig:
@@ -70,6 +87,7 @@ def load_agent_config() -> AgentConfig:
         max_open_proposals=parse_int("MAX_OPEN_PROPOSALS", 5),
         max_position_size=float(os.getenv("MAX_POSITION_SIZE", "10000")),
         max_daily_trades=parse_int("MAX_DAILY_TRADES", 20),
+        proposal_invalidation_pct=float(os.getenv("PROPOSAL_INVALIDATION_PCT", "1.5")),
     )
 
 
@@ -80,6 +98,7 @@ class AgentRuntime:
         self._thread: threading.Thread | None = None
         self._config: AgentConfig | None = None
         self._session: AgentSession | None = None
+        self._last_prices: dict[str, float] = {}
 
     def _log(self, level: str, category: str, message: str, **kwargs: Any) -> None:
         if not self._session:
@@ -129,7 +148,13 @@ class AgentRuntime:
 
     def session_payload(self) -> dict[str, Any]:
         if not self._session:
-            return {"sessionId": None, "status": "IDLE", "pendingApprovals": 0, "recentLogs": []}
+            return {
+                "sessionId": None,
+                "status": "IDLE",
+                "pendingApprovals": 0,
+                "recentLogs": [],
+                "capabilities": {},
+            }
         session = self._session
         session.refresh_from_db()
         uptime_ms = 0
@@ -141,9 +166,9 @@ class AgentRuntime:
             session=session,
             status="pending_user",
         ).count()
-        latest_snapshot = PortfolioSnapshot.objects.filter(
-            session=session
-        ).order_by("-timestamp").first()
+        latest_snapshot = (
+            PortfolioSnapshot.objects.filter(session=session).order_by("-timestamp").first()
+        )
         account = latest_snapshot.account_summary if latest_snapshot else {}
         positions = latest_snapshot.positions if latest_snapshot else []
         logs_qs = AgentLog.objects.filter(session=session).order_by("-timestamp")
@@ -168,6 +193,10 @@ class AgentRuntime:
             "pendingApprovals": pending_count,
             "recentLogs": logs,
             "lastError": session.last_error,
+            "capabilities": session.capability_registry,
+            "streamingConnected": session.streaming_connected,
+            "lastFeedSync": session.last_feed_sync_at,
+            "lastWatchlistSync": session.last_watchlist_sync_at,
         }
 
     def proposals_payload(self) -> list[dict[str, Any]]:
@@ -192,6 +221,11 @@ class AgentRuntime:
                 "createdAt": item.created_at,
                 "expiresAt": item.expires_at,
                 "status": item.status,
+                "providerScores": item.provider_scores,
+                "signalFreshness": item.signal_freshness,
+                "conflictFlags": item.conflict_flags,
+                "invalidationReason": item.invalidation_reason,
+                "sentimentSummary": item.sentiment_summary,
             }
             for item in proposals
         ]
@@ -240,85 +274,102 @@ class AgentRuntime:
         )
         return {"proposalId": proposal_id, "status": proposal.status}
 
-    def _build_proposal(
+    def _build_signal_context(
         self,
+        adapter: Any,
+        symbol: str,
         account: dict[str, Any],
         positions: list[dict[str, Any]],
-    ) -> dict[str, Any] | None:
-        assert self._config
-        unrealized = float(account.get("unrealizedPnl", 0))
-        cash = float(account.get("cash", 0))
-        if abs(unrealized) >= self._config.max_agent_loss:
-            self._log(
-                "WARNING",
-                "risk",
-                "MAX_AGENT_LOSS breached; proposal generation blocked",
-            )
-            return None
-        if not positions:
-            return {
-                "symbol": "SPY",
-                "action": "WATCH",
-                "size": 0,
-                "rationale": "No open positions. Watching benchmark.",
-                "risk_summary": "No immediate portfolio risk.",
-            }
+        history: list[dict[str, Any]],
+        capabilities: dict[str, bool],
+    ) -> dict[str, Any]:
+        context: dict[str, Any] = {
+            "adapter": adapter,
+            "symbol": symbol,
+            "account": account,
+            "positions": positions,
+            "portfolio_history": history,
+            "capabilities": capabilities,
+            "market_monitor": {},
+        }
+        if capabilities.get("supportsMarketMonitorStreaming"):
+            self._session.streaming_connected = True
+            self._session.save(update_fields=["streaming_connected"])
+            self._log("INFO", "capability", "Market monitor streaming available")
+        else:
+            self._session.streaming_connected = False
+            self._session.save(update_fields=["streaming_connected"])
+            self._log("INFO", "capability", "Streaming unavailable; using polling")
 
-        biggest = max(positions, key=lambda p: abs(float(p.get("marketValue", 0))))
-        symbol = biggest.get("symbol", "UNKNOWN")
-        exposure = abs(float(biggest.get("marketValue", 0)))
-        action = "REDUCE" if exposure > self._config.max_position_size else "HOLD"
-        size = round(min(exposure * 0.1, self._config.max_position_size), 2)
-        rationale = (
-            f"Exposure={exposure:.2f}, cash={cash:.2f}, "
-            f"unrealizedPnL={unrealized:.2f}"
+        return context
+
+    def _draft_from_fusion(
+        self,
+        symbol: str,
+        positions: list[dict[str, Any]],
+        fused: dict[str, Any],
+    ) -> dict[str, Any]:
+        symbol_position = next(
+            (item for item in positions if str(item.get("symbol", "")).upper() == symbol),
+            {},
         )
-        risk_summary = "Concentration risk elevated" if action == "REDUCE" else "Risk acceptable"
+        exposure = abs(float(symbol_position.get("marketValue", 0)))
+        size = round(min(max(exposure * 0.1, 50.0), self._config.max_position_size), 2)
+        proposal_type = fused["proposalType"]
+        action = proposal_type
+        if proposal_type == "HOLD":
+            size = 0
         return {
             "symbol": symbol,
             "action": action,
             "size": size,
-            "rationale": rationale,
-            "risk_summary": risk_summary,
+            "rationale": fused["explanationSummary"],
+            "risk_summary": (
+                "Risk engine veto active"
+                if proposal_type == "REQUIRE_REVIEW"
+                else "Risk within limits"
+            ),
         }
 
-    def _ai_explain(self, proposal: dict[str, Any], account: dict[str, Any]) -> dict[str, Any]:
+    def _openai_synthesis(
+        self,
+        symbol: str,
+        provider_scores: dict[str, Any],
+        fused: dict[str, Any],
+    ) -> dict[str, Any]:
         assert self._config
-        decider = LLMDecider(
-            provider="openai",
-            model="gpt-4o-mini",
-            api_key=self._config.openai_api_key,
-        )
-        prompt = (
-            "Return JSON keys: explanation, why_now, uncertainty_analysis, "
-            "risk_note, trade_offs, confidence. "
-            f"Proposal={json.dumps(proposal)} Account={json.dumps(account)}"
-        )
+        prompt_payload = {
+            "symbol": symbol,
+            "providerScores": provider_scores,
+            "fused": fused,
+            "requirements": [
+                "highlight technical first",
+                "explicitly mention risk conflicts",
+                "state uncertainty when confidence is low",
+                "never authorize direct execution",
+            ],
+        }
         try:
-            raw = decider.summarize_json({"prompt": prompt})
+            decider = LLMDecider(
+                provider="openai",
+                model="gpt-4o-mini",
+                api_key=self._config.openai_api_key,
+            )
+            summary = decider.summarize_json(prompt_payload)
             return {
-                "explanation": raw,
-                "why_now": "Risk drift detected now.",
-                "uncertainty_analysis": "Market regime can change abruptly.",
-                "risk_note": proposal["risk_summary"],
-                "trade_offs": "Reducing protects downside but can trim upside.",
-                "confidence": 0.62,
+                "explanation": summary,
+                "why_now": f"{symbol} moved into a {fused['proposalType']} window.",
+                "trade_offs": "Human approval required; risk constraints can override opportunity.",
+                "confidence": fused["confidenceScore"],
             }
         except Exception as exc:
-            logger.error("ai explanation failed: %s", exc)
-            self._log(
-                "ERROR",
-                "ai_explanation",
-                "AI explanation failed",
-                payload={"error": str(exc)},
-            )
+            logger.error("openai synthesis failed: %s", exc)
+            self._log("ERROR", "sentiment", "OpenAI synthesis failed", payload={"error": str(exc)})
             return {
-                "explanation": proposal["rationale"],
-                "why_now": "Signal threshold crossed.",
-                "uncertainty_analysis": "Fallback explanation used.",
-                "risk_note": proposal["risk_summary"],
-                "trade_offs": "Limited confidence due to fallback path.",
-                "confidence": 0.5,
+                "explanation": fused["explanationSummary"],
+                "why_now": "Signal thresholds crossed.",
+                "trade_offs": "Fallback synthesis path in use.",
+                "confidence": fused["confidenceScore"],
             }
 
     def _execute_approved(self, adapter: Any, snapshot_hash: str) -> None:
@@ -337,19 +388,23 @@ class AgentRuntime:
                 continue
             if item.snapshot_hash != snapshot_hash:
                 item.status = "failed"
-                item.save(update_fields=["status"])
+                item.invalidation_reason = "snapshot_changed"
+                item.save(update_fields=["status", "invalidation_reason"])
                 self._log(
                     "WARNING",
-                    "execution",
+                    "proposal_invalidation",
                     "Snapshot changed; execution blocked",
                     proposal=item,
                     symbol=item.symbol,
                 )
                 continue
-            if item.action not in WRITE_ACTIONS:
+
+            mapped_action = EXECUTION_ACTIONS.get(item.action)
+            if not mapped_action or mapped_action not in WRITE_ACTIONS:
                 item.status = "submitted"
                 item.save(update_fields=["status"])
                 continue
+
             exists = ExecutionEvent.objects.filter(
                 proposal=item,
                 event_type="submission",
@@ -372,16 +427,16 @@ class AgentRuntime:
                 "approvalTimestamp": approved_at,
                 "snapshotHash": snapshot_hash,
             }
-            if item.action in {"BUY", "SELL"}:
+            if mapped_action in {"BUY", "SELL"}:
                 result = adapter.placeOrder(
                     **common,
                     symbol=item.symbol,
-                    side=item.action,
+                    side=mapped_action,
                     size=item.size,
                 )
-            elif item.action == "REDUCE":
+            elif mapped_action == "REDUCE":
                 result = adapter.reducePosition(**common, symbol=item.symbol, size=item.size)
-            elif item.action == "CLOSE":
+            elif mapped_action == "CLOSE":
                 result = adapter.closePosition(**common, symbol=item.symbol)
             else:
                 result = adapter.cancelOrderIfSupported(**common, orderId=item.symbol)
@@ -412,6 +467,22 @@ class AgentRuntime:
         self._log("INFO", "lifecycle", "Agent started")
         try:
             adapter = build_etoro_adapter()
+            capabilities = detect_capabilities(adapter)
+            self._session.capability_registry = capabilities
+            self._session.save(update_fields=["capability_registry"])
+            self._log("INFO", "capability", "Capability registry detected", payload=capabilities)
+
+            providers = {
+                "technical": TechnicalSignalProvider(),
+                "portfolio_risk": PortfolioRiskProvider(),
+                "market_regime": MarketRegimeProvider(),
+                "social_sentiment": FeedSentimentProvider(
+                    openai_api_key=self._config.openai_api_key
+                ),
+                "watchlist_interest": WatchlistAttentionProvider(),
+                "curated_interest": CuratedListProvider(),
+            }
+
             while not self._stop_event.is_set():
                 now = timezone.now()
                 self._session.heartbeat_at = now
@@ -422,9 +493,18 @@ class AgentRuntime:
                 positions = adapter.getPositions()
                 orders = adapter.getOpenOrders()
                 history = adapter.getPortfolioHistory()
-
+                if capabilities.get("supportsFeeds"):
+                    self._session.last_feed_sync_at = timezone.now()
+                if capabilities.get("supportsWatchlists"):
+                    self._session.last_watchlist_sync_at = timezone.now()
                 self._session.latest_sync_at = timezone.now()
-                self._session.save(update_fields=["latest_sync_at"])
+                self._session.save(
+                    update_fields=[
+                        "latest_sync_at",
+                        "last_feed_sync_at",
+                        "last_watchlist_sync_at",
+                    ]
+                )
 
                 snapshot_hash = self._snapshot_hash(account, positions)
                 PortfolioSnapshot.objects.create(
@@ -453,40 +533,98 @@ class AgentRuntime:
                     status="pending_user",
                 ).count()
                 if pending < self._config.max_open_proposals:
-                    drafted = self._build_proposal(account, positions)
-                    if drafted:
-                        duplicate = AgentProposal.objects.filter(
+                    symbols = [
+                        str(item.get("symbol", "")).upper()
+                        for item in positions
+                        if item.get("symbol")
+                    ]
+                    symbol = symbols[0] if symbols else "SPY"
+                    context = self._build_signal_context(
+                        adapter,
+                        symbol,
+                        account,
+                        positions,
+                        history,
+                        capabilities,
+                    )
+
+                    provider_results = {
+                        name: provider.collect(symbol=symbol, context=context)
+                        for name, provider in providers.items()
+                    }
+
+                    latest_price = float(account.get("equity", 0) or 0)
+                    previous_price = self._last_prices.get(symbol, latest_price)
+                    price_move_pct = (
+                        0.0
+                        if previous_price == 0
+                        else ((latest_price - previous_price) / abs(previous_price)) * 100
+                    )
+                    self._last_prices[symbol] = latest_price
+
+                    fused = fuse_signals(
+                        provider_results,
+                        price_move_pct=price_move_pct,
+                        fresh_market_data=True,
+                    )
+                    drafted = self._draft_from_fusion(symbol, positions, fused)
+                    duplicate = AgentProposal.objects.filter(
+                        session=self._session,
+                        symbol=drafted["symbol"],
+                        action=drafted["action"],
+                        status="pending_user",
+                    ).exists()
+                    if not duplicate:
+                        provider_scores = {
+                            key: {
+                                "score": value.score,
+                                "confidence": value.confidence,
+                                "freshness": value.freshness,
+                                "rationale": value.rationale,
+                                "warnings": value.warnings,
+                            }
+                            for key, value in provider_results.items()
+                        }
+                        ai = self._openai_synthesis(symbol, provider_scores, fused)
+                        proposal = AgentProposal.objects.create(
                             session=self._session,
                             symbol=drafted["symbol"],
                             action=drafted["action"],
+                            size=drafted["size"],
+                            rationale=drafted["rationale"],
+                            risk_summary=drafted["risk_summary"],
+                            explanation=ai["explanation"],
+                            confidence=float(ai["confidence"]),
+                            expected_impact=ai["trade_offs"],
+                            why_now=ai["why_now"],
+                            expires_at=now
+                            + timedelta(milliseconds=self._config.approval_timeout_ms),
                             status="pending_user",
-                        ).exists()
-                        if not duplicate:
-                            ai = self._ai_explain(drafted, account)
-                            proposal = AgentProposal.objects.create(
-                                session=self._session,
-                                symbol=drafted["symbol"],
-                                action=drafted["action"],
-                                size=drafted["size"],
-                                rationale=drafted["rationale"],
-                                risk_summary=drafted["risk_summary"],
-                                explanation=ai["explanation"],
-                                confidence=float(ai["confidence"]),
-                                expected_impact=ai["trade_offs"],
-                                why_now=ai["why_now"],
-                                expires_at=now + timedelta(
-                                    milliseconds=self._config.approval_timeout_ms
-                                ),
-                                status="pending_user",
-                                snapshot_hash=snapshot_hash,
-                            )
-                            self._log(
-                                "INFO",
-                                "recommendation",
-                                "New proposal pending approval",
-                                proposal=proposal,
-                                symbol=proposal.symbol,
-                            )
+                            snapshot_hash=snapshot_hash,
+                            provider_scores=provider_scores,
+                            signal_freshness={
+                                key: value.freshness for key, value in provider_results.items()
+                            },
+                            conflict_flags=fused["conflictFlags"],
+                            invalidation_reason=(
+                                "material_price_move"
+                                if "proposal_invalidated_material_price_move"
+                                in fused["conflictFlags"]
+                                else ""
+                            ),
+                            sentiment_summary=provider_results[
+                                "social_sentiment"
+                            ].raw_inputs.get("summary", {}),
+                        )
+                        self._log(
+                            "INFO",
+                            "signal_fusion",
+                            "New proposal pending approval",
+                            proposal=proposal,
+                            symbol=proposal.symbol,
+                            payload={"fused": fused, "provider_scores": provider_scores},
+                        )
+
                 self._session.latest_analysis_at = timezone.now()
                 waiting = AgentProposal.objects.filter(
                     session=self._session,
@@ -503,12 +641,7 @@ class AgentRuntime:
             self._session.last_error = str(exc)
             self._session.worker_healthy = False
             self._session.save(update_fields=["status", "last_error", "worker_healthy"])
-            self._log(
-                "ERROR",
-                "error",
-                "Agent loop failed",
-                payload={"error": str(exc)},
-            )
+            self._log("ERROR", "error", "Agent loop failed", payload={"error": str(exc)})
         finally:
             self._session.stopped_at = timezone.now()
             if self._session.status != "ERROR":

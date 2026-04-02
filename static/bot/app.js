@@ -287,6 +287,8 @@ document.getElementById('projections-form').requestSubmit();
 playgroundForm.requestSubmit();
 
 const agentSessionOutput = document.getElementById('agent-session-output');
+const agentCapabilitiesOutput = document.getElementById('agent-capabilities-output');
+const agentProviderOutput = document.getElementById('agent-provider-output');
 const agentLogsOutput = document.getElementById('agent-logs-output');
 const agentProposalsContainer = document.getElementById('agent-proposals');
 const agentStartButton = document.getElementById('agent-start');
@@ -314,10 +316,13 @@ function renderAgentProposals(proposals) {
     card.className = 'card';
     card.innerHTML = `
       <h3>${proposal.symbol} · ${proposal.action}</h3>
-      <p>Size: ${proposal.size}</p>
-      <p>Estimated impact: ${proposal.expectedImpact}</p>
-      <p>Risk: ${proposal.riskSummary}</p>
+      <p>Position impact: ${proposal.size}</p>
       <p>Confidence: ${proposal.confidence}</p>
+      <p>Technical score: ${proposal.providerScores?.technical?.score ?? '-'}</p>
+      <p>Risk score: ${proposal.providerScores?.portfolio_risk?.score ?? '-'}</p>
+      <p>Sentiment score: ${proposal.providerScores?.social_sentiment?.score ?? '-'}</p>
+      <p>Watchlist/attention score: ${proposal.providerScores?.watchlist_interest?.score ?? '-'}</p>
+      <p>Conflict flags: ${(proposal.conflictFlags || []).join(', ') || 'none'}</p>
       <p>Why now: ${proposal.whyNow}</p>
       <p>${proposal.explanation}</p>
       <div class="inline-actions">
@@ -341,7 +346,19 @@ async function refreshAgentSection() {
     const proposalPayload = await proposalResp.json();
     const logsPayload = await logsResp.json();
     agentSessionOutput.textContent = JSON.stringify(sessionPayload, null, 2);
+    agentCapabilitiesOutput.textContent = JSON.stringify(sessionPayload.capabilities || {}, null, 2);
     renderAgentProposals(proposalPayload.proposals || []);
+    agentProviderOutput.textContent = JSON.stringify(
+      (proposalPayload.proposals || []).map((item) => ({
+        symbol: item.symbol,
+        providerScores: item.providerScores,
+        signalFreshness: item.signalFreshness,
+        sentimentSummary: item.sentimentSummary,
+        invalidationReason: item.invalidationReason,
+      })),
+      null,
+      2,
+    );
     agentLogsOutput.textContent = JSON.stringify(logsPayload.recentLogs || [], null, 2);
   } catch (error) {
     agentLogsOutput.textContent = `Error: ${error.message}`;
