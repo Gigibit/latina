@@ -13,6 +13,7 @@ from typing import Any
 from django.utils import timezone
 
 from trading_bot.bot.agent_signals import (
+    CryptoMicrostructureProvider,
     CuratedListProvider,
     FeedSentimentProvider,
     MarketRegimeProvider,
@@ -22,6 +23,8 @@ from trading_bot.bot.agent_signals import (
     detect_capabilities,
     fuse_signals,
 )
+from trading_bot.bot.attention_engine import AttentionEngine
+from trading_bot.bot.binance_adapter import build_binance_adapter
 from trading_bot.bot.etoro_adapter import build_etoro_adapter
 from trading_bot.bot.llm import LLMDecider
 from trading_bot.bot.micro_variation_engine import (
@@ -96,7 +99,7 @@ def load_agent_config() -> AgentConfig:
 
 
 class AgentRuntime:
-    def __init__(self) -> None:
+    def __init__(self, *, market: str = "trader") -> None:
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -104,6 +107,8 @@ class AgentRuntime:
         self._session: AgentSession | None = None
         self._last_prices: dict[str, float] = {}
         self._micro_engine: MicroVariationProposalEngine | None = None
+        self._market = market
+        self._attention_engine = AttentionEngine()
 
     def _log(self, level: str, category: str, message: str, **kwargs: Any) -> None:
         if not self._session:
@@ -133,6 +138,7 @@ class AgentRuntime:
             self._session = AgentSession.objects.create(
                 status="STARTING",
                 worker_healthy=True,
+                market=self._market,
             )
             self._stop_event.clear()
             self._thread = threading.Thread(
@@ -201,6 +207,7 @@ class AgentRuntime:
             "lastError": session.last_error,
             "capabilities": session.capability_registry,
             "streamingConnected": session.streaming_connected,
+            "market": session.market,
             "lastFeedSync": session.last_feed_sync_at,
             "lastWatchlistSync": session.last_watchlist_sync_at,
         }
@@ -232,6 +239,7 @@ class AgentRuntime:
                 "conflictFlags": item.conflict_flags,
                 "invalidationReason": item.invalidation_reason,
                 "sentimentSummary": item.sentiment_summary,
+                "attentionSummary": item.attention_summary,
                 "proposalOrigin": item.sentiment_summary.get("proposalOrigin", "core"),
                 "microMetrics": item.provider_scores.get("micro_variation", {}),
                 "ttlRemaining": max(
@@ -315,6 +323,7 @@ class AgentRuntime:
             "portfolio_history": history,
             "capabilities": capabilities,
             "market_monitor": {},
+            "order_book": {},
         }
         if capabilities.get("supportsMarketMonitorStreaming"):
             self._session.streaming_connected = True
@@ -325,7 +334,56 @@ class AgentRuntime:
             self._session.save(update_fields=["streaming_connected"])
             self._log("INFO", "capability", "Streaming unavailable; using polling")
 
+        if self._market == "crypto" and hasattr(adapter, "getOrderBookSnapshot"):
+            try:
+                context["order_book"] = adapter.getOrderBookSnapshot(symbol=symbol)
+            except Exception as exc:
+                logger.error(
+                    "agent signal context order book failed symbol=%s error=%s",
+                    symbol,
+                    exc,
+                )
+                self._log(
+                    "ERROR",
+                    "context",
+                    "Order book fetch failed",
+                    symbol=symbol,
+                    payload={"error": str(exc)},
+                )
         return context
+
+    def _invalidation_pass(self, *, now, account: dict[str, Any]) -> None:
+        assert self._session and self._config
+        pending = AgentProposal.objects.filter(session=self._session, status="pending_user")
+        for proposal in pending:
+            if proposal.expires_at <= now:
+                proposal.status = "expired"
+                proposal.invalidation_reason = "ttl_elapsed"
+                proposal.save(update_fields=["status", "invalidation_reason"])
+                continue
+            latest_price = self._last_prices.get(proposal.symbol)
+            reference_price = float(
+                proposal.provider_scores.get("reference_price", latest_price or 0)
+            )
+            if latest_price and reference_price:
+                move = abs((latest_price - reference_price) / reference_price) * 100
+                if move >= self._config.proposal_invalidation_pct:
+                    proposal.status = "invalidated"
+                    proposal.invalidation_reason = "price_out_of_entry_window"
+                    proposal.save(update_fields=["status", "invalidation_reason"])
+                    self._log(
+                        "WARNING",
+                        "proposal_invalidation",
+                        "Proposal invalidated for price movement",
+                        proposal=proposal,
+                        symbol=proposal.symbol,
+                        payload={"movePct": round(move, 4)},
+                    )
+                    continue
+            if float(account.get("drawdown", 0) or 0) >= self._config.max_agent_loss:
+                proposal.status = "invalidated"
+                proposal.invalidation_reason = "portfolio_state_changed"
+                proposal.save(update_fields=["status", "invalidation_reason"])
 
     def _draft_from_fusion(
         self,
@@ -490,7 +548,7 @@ class AgentRuntime:
         self._session.save(update_fields=["started_at", "status"])
         self._log("INFO", "lifecycle", "Agent started")
         try:
-            adapter = build_etoro_adapter()
+            adapter = build_binance_adapter() if self._market == "crypto" else build_etoro_adapter()
             capabilities = detect_capabilities(adapter)
             self._session.capability_registry = capabilities
             self._session.save(update_fields=["capability_registry"])
@@ -506,6 +564,8 @@ class AgentRuntime:
                 "watchlist_interest": WatchlistAttentionProvider(),
                 "curated_interest": CuratedListProvider(),
             }
+            if self._market == "crypto":
+                providers["microstructure"] = CryptoMicrostructureProvider()
 
             while not self._stop_event.is_set():
                 now = timezone.now()
@@ -546,11 +606,7 @@ class AgentRuntime:
                     payload={"positions": len(positions), "openOrders": len(orders)},
                 )
 
-                AgentProposal.objects.filter(
-                    session=self._session,
-                    status="pending_user",
-                    expires_at__lte=now,
-                ).update(status="expired")
+                self._invalidation_pass(now=now, account=account)
 
                 pending_qs = AgentProposal.objects.filter(
                     session=self._session,
@@ -578,6 +634,16 @@ class AgentRuntime:
                         name: provider.collect(symbol=symbol, context=context)
                         for name, provider in providers.items()
                     }
+                    attention = self._attention_engine.extract(
+                        symbol=symbol,
+                        feeds=provider_results["social_sentiment"].raw_inputs.get("posts", []),
+                        watchlists=context.get("adapter").getWatchlists()
+                        if capabilities.get("supportsWatchlists")
+                        else [],
+                        curated_lists=context.get("adapter").getCuratedLists()
+                        if capabilities.get("supportsCuratedLists")
+                        else [],
+                    )
                     latest_price = float(account.get("equity", 0) or 0)
                     previous_price = self._last_prices.get(symbol, latest_price)
                     price_move_pct = (
@@ -621,6 +687,7 @@ class AgentRuntime:
                             "sentiment_summary": provider_results[
                                 "social_sentiment"
                             ].raw_inputs.get("summary", {}),
+                            "attention_summary": attention,
                             "decision_path": ["core_signal_fusion"],
                         }
                     )
@@ -729,6 +796,7 @@ class AgentRuntime:
                             conflict_flags=candidate["conflict_flags"],
                             invalidation_reason=candidate["invalidation_reason"],
                             sentiment_summary=candidate["sentiment_summary"],
+                            attention_summary=candidate.get("attention_summary", {}),
                         )
                         category = (
                             "micro_engine"
@@ -773,4 +841,5 @@ class AgentRuntime:
             self._log("INFO", "lifecycle", "Agent stopped")
 
 
-agent_runtime = AgentRuntime()
+agent_runtime = AgentRuntime(market="trader")
+crypto_agent_runtime = AgentRuntime(market="crypto")

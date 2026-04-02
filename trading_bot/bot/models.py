@@ -20,6 +20,7 @@ class AgentSession(models.Model):
     streaming_connected = models.BooleanField(default=False)
     last_feed_sync_at = models.DateTimeField(null=True, blank=True)
     last_watchlist_sync_at = models.DateTimeField(null=True, blank=True)
+    market = models.CharField(max_length=16, default="trader")
     created_at = models.DateTimeField(auto_now_add=True)
 
 
@@ -44,6 +45,7 @@ class AgentProposal(models.Model):
     conflict_flags = models.JSONField(default=list)
     invalidation_reason = models.TextField(blank=True)
     sentiment_summary = models.JSONField(default=dict)
+    attention_summary = models.JSONField(default=dict)
 
 
 class AgentApproval(models.Model):

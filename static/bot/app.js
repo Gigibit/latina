@@ -323,8 +323,13 @@ function renderAgentProposals(proposals) {
       <p>Technical score: ${proposal.providerScores?.technical?.score ?? '-'}</p>
       <p>Risk score: ${proposal.providerScores?.portfolio_risk?.score ?? '-'}</p>
       <p>Sentiment score: ${proposal.providerScores?.social_sentiment?.score ?? '-'}</p>
+      <p>Attention score: ${proposal.attentionSummary?.attentionScore ?? '-'}</p>
+      <p>Crowding score: ${proposal.attentionSummary?.crowdingScore ?? '-'}</p>
+      <p>Narrative velocity: ${proposal.attentionSummary?.narrativeVelocity ?? '-'}</p>
       <p>Watchlist/attention score: ${proposal.providerScores?.watchlist_interest?.score ?? '-'}</p>
       <p>Conflict flags: ${(proposal.conflictFlags || []).join(', ') || 'none'}</p>
+      <p>Tag: ${isMicro ? 'micro' : 'macro'}</p>
+      <p>TTL countdown: ${proposal.ttlRemaining ?? '-'}s</p>
       ${isMicro ? `<p>localLow: ${microMetrics.localLow ?? '-'}</p>` : ''}
       ${isMicro ? `<p>localHigh: ${microMetrics.localHigh ?? '-'}</p>` : ''}
       ${isMicro ? `<p>microRange: ${microMetrics.microRange ?? '-'}</p>` : ''}
@@ -415,3 +420,83 @@ if (agentProposalsContainer) {
 
 window.setInterval(refreshAgentSection, 4000);
 refreshAgentSection();
+
+const cryptoAgentSessionOutput = document.getElementById('crypto-agent-session-output');
+const cryptoAgentLogsOutput = document.getElementById('crypto-agent-logs-output');
+const cryptoAgentProposalsContainer = document.getElementById('crypto-agent-proposals');
+const cryptoAgentStartButton = document.getElementById('crypto-agent-start');
+const cryptoAgentStopButton = document.getElementById('crypto-agent-stop');
+
+function renderCryptoProposals(proposals) {
+  if (!cryptoAgentProposalsContainer) return;
+  cryptoAgentProposalsContainer.innerHTML = '';
+  if (!proposals.length) {
+    cryptoAgentProposalsContainer.innerHTML = '<div class="card">No pending decisions.</div>';
+    return;
+  }
+  proposals.forEach((proposal) => {
+    const card = document.createElement('article');
+    card.className = 'card';
+    card.innerHTML = `
+      <h3>${proposal.symbol} · ${proposal.action}</h3>
+      <p>Signal breakdown: technical=${proposal.providerScores?.technical?.score ?? '-'} / risk=${proposal.providerScores?.portfolio_risk?.score ?? '-'} / sentiment=${proposal.providerScores?.social_sentiment?.score ?? '-'}</p>
+      <p>Microstructure: ${proposal.providerScores?.microstructure?.score ?? '-'}</p>
+      <p>Conflict flags: ${(proposal.conflictFlags || []).join(', ') || 'none'}</p>
+      <p>TTL countdown: ${proposal.ttlRemaining ?? '-'}s</p>
+      <p>${proposal.explanation}</p>
+      <div class="inline-actions">
+        <button class="approve" data-id="${proposal.proposalId}">Yes</button>
+        <button class="reject secondary" data-id="${proposal.proposalId}">No</button>
+      </div>
+    `;
+    cryptoAgentProposalsContainer.appendChild(card);
+  });
+}
+
+async function refreshCryptoAgentSection() {
+  if (!cryptoAgentSessionOutput) return;
+  try {
+    const [sessionResp, proposalResp, logsResp] = await Promise.all([
+      fetch('/api/agent-crypto/session'),
+      fetch('/api/agent-crypto/proposals'),
+      fetch('/api/agent-crypto/logs'),
+    ]);
+    const sessionPayload = await sessionResp.json();
+    const proposalPayload = await proposalResp.json();
+    const logsPayload = await logsResp.json();
+    cryptoAgentSessionOutput.textContent = JSON.stringify(sessionPayload, null, 2);
+    renderCryptoProposals(proposalPayload.proposals || []);
+    cryptoAgentLogsOutput.textContent = JSON.stringify(logsPayload.recentLogs || [], null, 2);
+  } catch (error) {
+    cryptoAgentLogsOutput.textContent = `Error: ${error.message}`;
+  }
+}
+
+if (cryptoAgentStartButton) {
+  cryptoAgentStartButton.addEventListener('click', async () => {
+    await postAgent('/api/agent-crypto/start');
+    await refreshCryptoAgentSection();
+  });
+}
+if (cryptoAgentStopButton) {
+  cryptoAgentStopButton.addEventListener('click', async () => {
+    await postAgent('/api/agent-crypto/stop');
+    await refreshCryptoAgentSection();
+  });
+}
+if (cryptoAgentProposalsContainer) {
+  cryptoAgentProposalsContainer.addEventListener('click', async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    const proposalId = target.dataset.id;
+    if (!proposalId) return;
+    const endpoint = target.classList.contains('approve')
+      ? `/api/agent-crypto/proposals/${proposalId}/approve`
+      : `/api/agent-crypto/proposals/${proposalId}/reject`;
+    await postAgent(endpoint);
+    await refreshCryptoAgentSection();
+  });
+}
+
+window.setInterval(refreshCryptoAgentSection, 4000);
+refreshCryptoAgentSection();
