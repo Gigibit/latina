@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 from django.utils import timezone
 
+from trading_bot.bot.conflict_engine import ConflictEngine
 from trading_bot.bot.llm import LLMDecider
 
 logger = logging.getLogger(__name__)
@@ -25,13 +26,10 @@ CAPABILITY_FLAGS = {
     "supportsRealTrading": "ETORO_CAP_SUPPORTS_REAL_TRADING",
 }
 
-DEFAULT_WEIGHTS = {
-    "technical_score": 0.60,
-    "portfolio_risk_score": 0.20,
-    "market_regime_score": 0.10,
-    "social_sentiment_score": 0.05,
-    "watchlist_interest_score": 0.05,
-}
+TIER_1_WEIGHT = 0.62
+TIER_2_WEIGHT = 0.24
+TIER_3_WEIGHT = 0.10
+TIER_4_WEIGHT = 0.04
 
 
 @dataclass
@@ -167,6 +165,26 @@ class MarketRegimeProvider:
         )
 
 
+class CryptoMicrostructureProvider:
+    name = "microstructure"
+
+    def collect(self, *, symbol: str, context: dict[str, Any]) -> SignalResult:
+        order_book = context.get("order_book", {}) or {}
+        spread_bps = float(order_book.get("spread_bps", 12.0) or 12.0)
+        imbalance = float(order_book.get("imbalance", 0.0) or 0.0)
+        freshness = float(order_book.get("freshness", 0.6) or 0.6)
+        base = max(0.0, min(1.0, 1 - (spread_bps / 45)))
+        score = max(0.0, min(1.0, (base * 0.75) + (max(imbalance, 0.0) * 0.25)))
+        return SignalResult(
+            score=score,
+            confidence=0.78,
+            freshness=freshness,
+            rationale=f"Spread bps={spread_bps:.2f}, bid/ask imbalance={imbalance:.2f}",
+            raw_inputs={"spread_bps": spread_bps, "imbalance": imbalance},
+            warnings=["microstructure_unavailable"] if not order_book else [],
+        )
+
+
 class FeedSentimentProvider:
     name = "social_sentiment"
 
@@ -223,7 +241,7 @@ class FeedSentimentProvider:
             confidence=0.35,
             freshness=1.0,
             rationale=str(summary.get("explanation", "")),
-            raw_inputs={"posts": len(posts), "summary": summary},
+            raw_inputs={"posts_count": len(posts), "posts": posts[:20], "summary": summary},
             warnings=["sentiment_context_only"],
         )
 
@@ -325,35 +343,45 @@ def fuse_signals(
     price_move_pct: float,
     fresh_market_data: bool,
 ) -> dict[str, Any]:
+    conflict_engine = ConflictEngine()
     technical = results["technical"].score
+    breakout_quality = technical
+    microstructure = results.get("microstructure", SignalResult(0.5, 0.4, 0.5, "", {}, [])).score
     risk = results["portfolio_risk"].score
+    exposure = risk
+    drawdown_score = risk
     regime = results["market_regime"].score
     sentiment = results["social_sentiment"].score
     attention = (results["watchlist_interest"].score + results["curated_interest"].score) / 2
+    llm_meta = 0.5
 
+    tier_1 = (technical + breakout_quality + microstructure) / 3
+    tier_2 = (risk + exposure + drawdown_score) / 3
+    tier_3 = (regime + sentiment + attention) / 3
     proposal_score = (
-        technical * DEFAULT_WEIGHTS["technical_score"]
-        + risk * DEFAULT_WEIGHTS["portfolio_risk_score"]
-        + regime * DEFAULT_WEIGHTS["market_regime_score"]
-        + sentiment * DEFAULT_WEIGHTS["social_sentiment_score"]
-        + attention * DEFAULT_WEIGHTS["watchlist_interest_score"]
+        (tier_1 * TIER_1_WEIGHT)
+        + (tier_2 * TIER_2_WEIGHT)
+        + (tier_3 * TIER_3_WEIGHT)
+        + (llm_meta * TIER_4_WEIGHT)
     )
 
-    conflict_flags: list[str] = []
-    if technical >= 0.65 and sentiment <= 0.4:
-        conflict_flags.append("technical_vs_sentiment_conflict")
-    if technical >= 0.65 and risk < 0.3:
-        conflict_flags.append("opportunity_vs_portfolio_risk_conflict")
-    if technical >= 0.75 and regime <= 0.35:
-        conflict_flags.append("breakout_vs_overextension_conflict")
-    if not fresh_market_data:
-        conflict_flags.append("strong_setup_vs_stale_data_conflict")
-    if abs(price_move_pct) >= 1.5:
-        conflict_flags.append("proposal_invalidated_material_price_move")
+    conflict = conflict_engine.evaluate(
+        technical_score=technical,
+        breakout_quality=breakout_quality,
+        microstructure_score=microstructure,
+        portfolio_risk_score=risk,
+        exposure_score=exposure,
+        drawdown_score=drawdown_score,
+        sentiment_score=sentiment,
+        attention_score=attention,
+        fresh_market_data=fresh_market_data,
+        price_move_pct=price_move_pct,
+    )
 
     avg_conf = sum(item.confidence for item in results.values()) / max(len(results), 1)
     min_freshness = min(item.freshness for item in results.values())
     confidence_score = max(0.0, min(1.0, (avg_conf * 0.75) + (min_freshness * 0.25)))
+    confidence_score = min(confidence_score, conflict.adjusted_confidence)
     if risk < 0.2:
         confidence_score = min(confidence_score, 0.35)
 
@@ -379,9 +407,16 @@ def fuse_signals(
         "confidenceScore": round(confidence_score, 4),
         "approvalPriority": approval_priority,
         "proposalType": proposal_type,
-        "conflictFlags": conflict_flags,
+        "conflictFlags": conflict.conflict_flags,
         "explanationSummary": (
-            f"Technical={technical:.2f}, Risk={risk:.2f}, Regime={regime:.2f}, "
-            f"Sentiment={sentiment:.2f}, Attention={attention:.2f}."
+            f"Tier1(tech/breakout/micro)={tier_1:.2f}, Tier2(risk)={tier_2:.2f}, "
+            f"Tier3(attention/sentiment)={tier_3:.2f}. {conflict.explanation_summary}"
         ),
+        "signalBreakdown": {
+            "technical": round(technical, 4),
+            "risk": round(risk, 4),
+            "sentiment": round(sentiment, 4),
+            "attention": round(attention, 4),
+            "microstructure": round(microstructure, 4),
+        },
     }

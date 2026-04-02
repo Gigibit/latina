@@ -63,3 +63,12 @@ def test_agent_approve_view(monkeypatch):
     assert response.status_code == 200
     payload = json.loads(response.content)
     assert payload["status"] == "approved"
+
+
+def test_crypto_agent_session_view(monkeypatch):
+    monkeypatch.setattr(views, "crypto_agent_runtime", DummyRuntime())
+    request = RequestFactory().get("/api/agent-crypto/session")
+    response = views.crypto_agent_session_view(request)
+    assert response.status_code == 200
+    payload = json.loads(response.content)
+    assert payload["sessionId"] == "sid-1"
