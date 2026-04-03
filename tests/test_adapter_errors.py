@@ -32,6 +32,41 @@ def test_etoro_adapter_includes_http_error_body(monkeypatch):
     assert "token expired" in message
 
 
+def test_etoro_adapter_uses_public_api_headers(monkeypatch):
+    captured = {}
+
+    class DummyResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = {k.lower(): v for k, v in request.header_items()}
+        captured["timeout"] = timeout
+        return DummyResponse()
+
+    monkeypatch.setattr("trading_bot.bot.etoro_adapter.urlopen", fake_urlopen)
+    adapter = EtoroAdapter(
+        api_key="token",
+        base_url="https://public-api.etoro.com/api/v1",
+        user_key="user-key",
+    )
+
+    adapter.getAccountSummary()
+
+    assert captured["url"] == "https://public-api.etoro.com/api/v1/account/summary"
+    assert captured["headers"]["x-api-key"] == "token"
+    assert captured["headers"]["x-user-key"] == "user-key"
+    assert "x-request-id" in captured["headers"]
+    assert captured["timeout"] == 15
+
+
 def test_binance_adapter_includes_http_error_body(monkeypatch):
     def raise_http_error(request, timeout):
         raise HTTPError(

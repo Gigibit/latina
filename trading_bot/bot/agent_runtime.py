@@ -187,12 +187,12 @@ class AgentRuntime:
             )
             raise ValueError(message)
 
-        base_url = os.getenv("ETORO_API_BASE_URL", "https://api.etoro.com").strip()
+        base_url = os.getenv("ETORO_API_BASE_URL", "https://public-api.etoro.com/api/v1").strip()
         parsed = urlparse(base_url)
         if parsed.scheme != "https" or not parsed.netloc:
             message = (
                 "Broker configuration invalid: ETORO_API_BASE_URL must be a valid HTTPS URL "
-                "(example: https://api.etoro.com)."
+                "(example: https://public-api.etoro.com/api/v1)."
             )
             logger.error(
                 "broker preflight failed market=%s reason=invalid_base_url value=%s",
