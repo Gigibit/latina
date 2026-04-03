@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+logger = logging.getLogger(__name__)
 
 
 class BinanceAdapter:
@@ -16,14 +20,29 @@ class BinanceAdapter:
         self, path: str, params: dict[str, Any] | None = None
     ) -> dict[str, Any] | list[Any]:
         query = f"?{urlencode(params)}" if params else ""
+        endpoint = f"{self.base_url}{path}{query}"
         request = Request(
-            f"{self.base_url}{path}{query}",
+            endpoint,
             method="GET",
             headers={"X-MBX-APIKEY": self.api_key},
         )
-        with urlopen(request, timeout=10) as response:
-            raw = response.read().decode("utf-8")
-            return json.loads(raw) if raw else {}
+        try:
+            with urlopen(request, timeout=10) as response:
+                raw = response.read().decode("utf-8")
+                return json.loads(raw) if raw else {}
+        except HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace").strip()
+            message = (
+                "Binance API request failed "
+                f"status={exc.code} url={endpoint} reason={exc.reason} "
+                f"body={error_body or '<empty>'}"
+            )
+            logger.error(message)
+            raise RuntimeError(message) from exc
+        except URLError as exc:
+            message = f"Binance API request failed url={endpoint} reason={exc.reason}"
+            logger.error(message)
+            raise RuntimeError(message) from exc
 
     def getAccountSummary(self) -> dict[str, Any]:
         return {"equity": 10000, "cash": 10000, "riskLevel": "medium", "drawdown": 0.0}
