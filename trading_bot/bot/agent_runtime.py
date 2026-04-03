@@ -163,6 +163,12 @@ class AgentRuntime:
         base = max(self._config.loop_interval_ms / 1000, 1) if self._config else 1
         return min(base * (2 ** min(self._recoverable_error_count, 4)), 30)
 
+    def _resolve_execution_action(self, proposal_action: str) -> str | None:
+        normalized = str(proposal_action or "").upper()
+        if normalized in WRITE_ACTIONS:
+            return normalized
+        return EXECUTION_ACTIONS.get(normalized)
+
     def _validate_broker_config(self) -> None:
         if self._market == "crypto":
             return
@@ -672,8 +678,8 @@ class AgentRuntime:
                 )
                 continue
 
-            mapped_action = EXECUTION_ACTIONS.get(item.action)
-            if not mapped_action or mapped_action not in WRITE_ACTIONS:
+            mapped_action = self._resolve_execution_action(item.action)
+            if not mapped_action:
                 item.status = "submitted"
                 item.save(update_fields=["status"])
                 continue
