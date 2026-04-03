@@ -91,7 +91,7 @@ def get_trending_tickers(
     if normalized_provider == "YFINANCE":
         return get_trending_tickers_from_yahoo_finance(region=region, count=count, limit=limit)
     if normalized_provider == "ETORO":
-        return get_trending_tickers_from_etoro(count=count, limit=limit)
+        return get_trending_tickers_from_etoro(limit=limit)
     message = (
         "MARKET_TRENDING_TICKERS_PROVIDER must be one of: YFINANCE, ETORO "
         f"(got: {normalized_provider or '<empty>'})"
@@ -185,7 +185,7 @@ def get_trending_tickers_from_yahoo_finance(
     return symbols[: max(limit, 1)]
 
 
-def get_trending_tickers_from_etoro(*, count: int, limit: int = 10) -> list[str]:
+def get_trending_tickers_from_etoro(*, limit: int = 10) -> list[str]:
     api_key = os.getenv("ETORO_API_KEY", "").strip()
     user_key = os.getenv("ETORO_USER_KEY", "").strip()
     if not api_key or not user_key:
@@ -197,7 +197,7 @@ def get_trending_tickers_from_etoro(*, count: int, limit: int = 10) -> list[str]
         logger.error(message)
         raise RuntimeError(message)
 
-    api_url = f"https://public-api.etoro.com/api/v1/market-recommendations/{count}"
+    api_url = "https://public-api.etoro.com/api/v1/watchlists"
     headers = {
         "Accept": "application/json",
         "X-Request-Id": os.getenv("ETORO_REQUEST_ID", str(uuid.uuid4())),
@@ -212,9 +212,8 @@ def get_trending_tickers_from_etoro(*, count: int, limit: int = 10) -> list[str]
     request = Request(api_url, headers=headers, method="GET")
     for attempt in range(1, max_attempts + 1):
         logger.info(
-            "External request service=etoro endpoint=market_recommendations provider=ETORO "
-            "count=%s attempt=%s/%s url=%s",
-            count,
+            "External request service=etoro endpoint=watchlists provider=ETORO "
+            "attempt=%s/%s url=%s",
             attempt,
             max_attempts,
             api_url,
@@ -226,7 +225,7 @@ def get_trending_tickers_from_etoro(*, count: int, limit: int = 10) -> list[str]
                     payload = json.loads(raw_payload)
                 except json.JSONDecodeError as exc:
                     logger.error(
-                        "Unable to parse eToro market recommendations JSON url=%s error=%s body=%s",
+                        "Unable to parse eToro watchlists JSON url=%s error=%s body=%s",
                         api_url,
                         exc,
                         raw_payload[:500],
@@ -235,7 +234,7 @@ def get_trending_tickers_from_etoro(*, count: int, limit: int = 10) -> list[str]
                         "Unable to parse trending symbols response from eToro."
                     ) from exc
                 logger.info(
-                    "External response service=etoro endpoint=market_recommendations "
+                    "External response service=etoro endpoint=watchlists "
                     "status=%s bytes=%s",
                     getattr(response, "status", "n/a"),
                     len(raw_payload),
@@ -246,7 +245,7 @@ def get_trending_tickers_from_etoro(*, count: int, limit: int = 10) -> list[str]
             is_rate_limited = exc.code == 429
             should_retry = retry_enabled and is_rate_limited and attempt < max_attempts
             logger.warning(
-                "External response service=etoro endpoint=market_recommendations "
+                "External response service=etoro endpoint=watchlists "
                 "status=%s rate_limited=%s retry=%s url=%s",
                 exc.code,
                 is_rate_limited,
@@ -281,13 +280,12 @@ def get_trending_tickers_from_etoro(*, count: int, limit: int = 10) -> list[str]
 
     instrument_ids = _extract_etoro_instrument_ids(payload)
     logger.info(
-        "eToro trending symbols payload parsed provider=ETORO count=%s instruments_received=%s",
-        count,
+        "eToro watchlists payload parsed provider=ETORO instruments_received=%s",
         len(instrument_ids),
     )
     if not instrument_ids:
-        logger.error("eToro returned no trending instruments count=%s", count)
-        raise RuntimeError("eToro returned no trending instruments.")
+        logger.error("eToro watchlists returned no instruments.")
+        raise RuntimeError("eToro watchlists returned no instruments.")
 
     symbols = _resolve_etoro_instrument_ids_to_symbols(instrument_ids)
     logger.info(
@@ -297,7 +295,7 @@ def get_trending_tickers_from_etoro(*, count: int, limit: int = 10) -> list[str]
         len(symbols),
     )
     if not symbols:
-        logger.error("Unable to resolve any eToro instrumentId to symbol count=%s", count)
+        logger.error("Unable to resolve any eToro instrumentId to symbol.")
         raise RuntimeError("Unable to resolve eToro instrument IDs into symbols.")
     return symbols[: max(limit, 1)]
 
@@ -307,14 +305,25 @@ def _get_trending_provider() -> str:
 
 
 def _extract_etoro_instrument_ids(payload: object) -> list[int]:
-    recommendations = payload if isinstance(payload, list) else []
+    if isinstance(payload, list):
+        watchlists = payload
+    elif isinstance(payload, dict):
+        watchlists = payload.get("watchlists", [])
+    else:
+        watchlists = []
     instrument_ids: list[int] = []
-    for item in recommendations:
-        if not isinstance(item, dict):
+    for watchlist in watchlists:
+        if not isinstance(watchlist, dict):
             continue
-        instrument_id = item.get("instrumentId")
-        if isinstance(instrument_id, int) and instrument_id not in instrument_ids:
-            instrument_ids.append(instrument_id)
+        items = watchlist.get("Items", [])
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            instrument_id = item.get("Instrument")
+            if isinstance(instrument_id, int) and instrument_id not in instrument_ids:
+                instrument_ids.append(instrument_id)
     return instrument_ids
 
 
