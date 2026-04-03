@@ -1,5 +1,6 @@
 import json
 import types
+import uuid
 from datetime import datetime, timedelta
 from urllib.error import HTTPError, URLError
 
@@ -110,22 +111,21 @@ def test_fetch_trending_symbols_uses_etoro_provider(monkeypatch):
     assert captured["headers"]["X-api-key"] == "api-key"
     assert captured["headers"]["X-user-key"] == "user-key"
     assert "X-request-id" in captured["headers"]
+    uuid.UUID(captured["headers"]["X-request-id"])
 
 
-def test_fetch_trending_symbols_etoro_fallbacks_to_query_count_on_422(monkeypatch):
+def test_fetch_trending_symbols_etoro_raises_on_422_without_fallback(monkeypatch):
     captured_urls: list[str] = []
 
     def fake_urlopen(request, timeout):
         captured_urls.append(request.full_url)
-        if request.full_url.endswith("/market-recommendations/5"):
-            raise HTTPError(
-                url=request.full_url,
-                code=422,
-                msg="Unprocessable Entity",
-                hdrs=None,
-                fp=None,
-            )
-        return _DummyResponse([{"instrumentId": 1}])
+        raise HTTPError(
+            url=request.full_url,
+            code=422,
+            msg="Unprocessable Entity",
+            hdrs=None,
+            fp=None,
+        )
 
     monkeypatch.setenv("MARKET_TRENDING_TICKERS_PROVIDER", "ETORO")
     monkeypatch.setenv("ETORO_API_KEY", "api-key")
@@ -134,13 +134,10 @@ def test_fetch_trending_symbols_etoro_fallbacks_to_query_count_on_422(monkeypatc
     monkeypatch.setenv("TRENDING_CANDIDATES_SEARCH_NUMBER", "5")
     monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
 
-    symbols = data_sources.fetch_trending_symbols(region="US", limit=10)
+    with pytest.raises(RuntimeError, match="Unable to fetch trending symbols from eToro"):
+        data_sources.fetch_trending_symbols(region="US", limit=10)
 
-    assert symbols == ["AAPL"]
-    assert captured_urls == [
-        "https://public-api.etoro.com/api/v1/market-recommendations/5",
-        "https://public-api.etoro.com/api/v1/market-recommendations?count=5",
-    ]
+    assert captured_urls == ["https://public-api.etoro.com/api/v1/market-recommendations/5"]
 
 
 def test_fetch_trending_symbols_etoro_requires_keys(monkeypatch):
