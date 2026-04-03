@@ -92,8 +92,16 @@ def test_fetch_trending_symbols_uses_etoro_provider(monkeypatch):
         return _DummyResponse(
             {
                 "watchlists": [
-                    {"Items": [{"Instrument": 1, "symbolName": "AAPL"}]},
-                    {"Items": [{"Instrument": 2, "symbolName": "MSFT"}]},
+                    {
+                        "items": [
+                            {"itemType": "Instrument", "market": {"id": "1", "symbolName": "AAPL"}}
+                        ]
+                    },
+                    {
+                        "items": [
+                            {"itemType": "Instrument", "market": {"id": "2", "symbolName": "MSFT"}}
+                        ]
+                    },
                 ]
             }
         )
@@ -148,7 +156,17 @@ def test_fetch_trending_symbols_etoro_requires_keys(monkeypatch):
 
 def test_fetch_trending_symbols_etoro_raises_when_symbol_name_missing(monkeypatch):
     def fake_urlopen(request, timeout):
-        return _DummyResponse({"watchlists": [{"Items": [{"Instrument": 1001}]}]})
+        return _DummyResponse(
+            {
+                "watchlists": [
+                    {
+                        "items": [
+                            {"itemType": "Instrument", "itemId": 1001, "market": {"id": "1001"}}
+                        ]
+                    }
+                ]
+            }
+        )
 
     monkeypatch.setenv("MARKET_TRENDING_TICKERS_PROVIDER", "ETORO")
     monkeypatch.setenv("ETORO_API_KEY", "api-key")
@@ -165,7 +183,15 @@ def test_fetch_trending_symbols_etoro_ignores_trending_candidates_count(monkeypa
     def fake_urlopen(request, timeout):
         captured["url"] = request.full_url
         return _DummyResponse(
-            {"watchlists": [{"Items": [{"Instrument": 1, "symbolName": "AAPL"}]}]}
+            {
+                "watchlists": [
+                    {
+                        "items": [
+                            {"itemType": "Instrument", "market": {"id": "1", "symbolName": "AAPL"}}
+                        ]
+                    }
+                ]
+            }
         )
 
     monkeypatch.setenv("MARKET_TRENDING_TICKERS_PROVIDER", "ETORO")
@@ -178,34 +204,6 @@ def test_fetch_trending_symbols_etoro_ignores_trending_candidates_count(monkeypa
 
     assert symbols == ["AAPL"]
     assert captured["url"] == "https://public-api.etoro.com/api/v1/watchlists"
-
-
-def test_fetch_trending_symbols_etoro_accepts_alternative_payload_shapes(monkeypatch):
-    def fake_urlopen(request, timeout):
-        return _DummyResponse(
-            {
-                "Data": {
-                    "Watchlists": [
-                        {
-                            "instruments": [
-                                {"instrumentId": "1", "symbolName": "AAPL"},
-                                {"InstrumentID": 2, "symbolName": "MSFT"},
-                            ]
-                        },
-                        {"Items": [{"InstrumentId": 2, "symbolName": "MSFT"}]},
-                    ]
-                }
-            }
-        )
-
-    monkeypatch.setenv("MARKET_TRENDING_TICKERS_PROVIDER", "ETORO")
-    monkeypatch.setenv("ETORO_API_KEY", "api-key")
-    monkeypatch.setenv("ETORO_USER_KEY", "user-key")
-    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
-
-    symbols = data_sources.fetch_trending_symbols(limit=10)
-
-    assert symbols == ["AAPL", "MSFT"]
 
 
 def test_fetch_trending_symbols_etoro_accepts_public_api_watchlist_items(monkeypatch):
@@ -226,8 +224,16 @@ def test_fetch_trending_symbols_etoro_accepts_public_api_watchlist_items(monkeyp
                                 "itemType": "Portfolio",
                                 "market": {"id": "99", "symbolName": "SHOULD_SKIP"},
                             },
-                            {"itemId": 3, "itemType": "Instrument", "symbolName": "AAPL"},
-                            {"itemId": 4, "itemType": "Instrument", "SymbolName": "MSFT"},
+                            {
+                                "itemId": 3,
+                                "itemType": "Instrument",
+                                "market": {"id": "3", "symbolName": "AAPL"},
+                            },
+                            {
+                                "itemId": 4,
+                                "itemType": "Instrument",
+                                "market": {"id": "4", "symbolName": "MSFT"},
+                            },
                         ]
                     }
                 ]
