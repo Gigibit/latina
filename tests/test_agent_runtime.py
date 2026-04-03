@@ -77,3 +77,21 @@ def test_error_classifier_marks_429_as_recoverable():
 
     assert runtime._is_recoverable_error(exc) is True
     assert runtime._is_auth_fatal_error(exc) is False
+
+
+@pytest.mark.parametrize(
+    "proposal_action,expected",
+    [
+        ("BUY", "BUY"),
+        ("sell", "SELL"),
+        ("BUY_CANDIDATE", "BUY"),
+        ("CLOSE_CANDIDATE", "CLOSE"),
+        ("hold", None),
+    ],
+)
+def test_resolve_execution_action_supports_direct_and_candidate_actions(
+    proposal_action, expected
+):
+    runtime = AgentRuntime(market="trader")
+
+    assert runtime._resolve_execution_action(proposal_action) == expected

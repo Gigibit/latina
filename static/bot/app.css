@@ -180,3 +180,12 @@ button {
 .compact {
   min-height: 120px;
 }
+
+.logs-panel summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.logs-panel[open] summary {
+  margin-bottom: .75rem;
+}
