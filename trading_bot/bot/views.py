@@ -31,6 +31,36 @@ def _auto_detection_symbol_number() -> int:
     return max(int(raw_value), 0)
 
 
+def _log_agent_request(
+    view_name: str, service_name: str, *, proposal_id: str | None = None
+) -> None:
+    logger.info(
+        "Request %s service=%s proposal_id=%s",
+        view_name,
+        service_name,
+        proposal_id or "-",
+    )
+
+
+def _log_agent_response(
+    view_name: str,
+    service_name: str,
+    *,
+    status: int,
+    payload: dict | None = None,
+    proposals: list | None = None,
+) -> None:
+    logger.info(
+        "Response %s status=%s service=%s session_id=%s proposals_count=%s recent_logs_count=%s",
+        view_name,
+        status,
+        service_name,
+        (payload or {}).get("sessionId"),
+        len(proposals) if proposals is not None else "n/a",
+        len((payload or {}).get("recentLogs", [])),
+    )
+
+
 @require_GET
 def dashboard_view(request):
     auto_detection_symbol_number = _auto_detection_symbol_number()
@@ -432,10 +462,12 @@ def candle_playground_view(request):
 
 @require_http_methods(["POST"])
 def agent_start_view(request):
+    _log_agent_request("agent_start_view", "agent_runtime")
     try:
         session = agent_runtime.start()
         payload = agent_runtime.session_payload()
         payload["sessionId"] = str(session.session_id)
+        _log_agent_response("agent_start_view", "agent_runtime", status=200, payload=payload)
         return JsonResponse(payload)
     except Exception as exc:
         logger.error(
@@ -448,9 +480,12 @@ def agent_start_view(request):
 
 @require_http_methods(["POST"])
 def agent_stop_view(request):
+    _log_agent_request("agent_stop_view", "agent_runtime")
     try:
         agent_runtime.stop()
-        return JsonResponse(agent_runtime.session_payload())
+        payload = agent_runtime.session_payload()
+        _log_agent_response("agent_stop_view", "agent_runtime", status=200, payload=payload)
+        return JsonResponse(payload)
     except Exception as exc:
         logger.error(
             "Response agent_stop_view status=400 message=Failed to stop agent error=%s",
@@ -462,8 +497,11 @@ def agent_stop_view(request):
 
 @require_GET
 def agent_session_view(request):
+    _log_agent_request("agent_session_view", "agent_runtime")
     try:
-        return JsonResponse(agent_runtime.session_payload())
+        payload = agent_runtime.session_payload()
+        _log_agent_response("agent_session_view", "agent_runtime", status=200, payload=payload)
+        return JsonResponse(payload)
     except Exception as exc:
         logger.error(
             "Response agent_session_view status=500 message=Failed to read agent session error=%s",
@@ -475,11 +513,20 @@ def agent_session_view(request):
 
 @require_GET
 def agent_logs_view(request):
+    _log_agent_request("agent_logs_view", "agent_runtime")
     try:
         payload = agent_runtime.session_payload()
-        return JsonResponse(
-            {"sessionId": payload.get("sessionId"), "recentLogs": payload.get("recentLogs", [])}
+        response_payload = {
+            "sessionId": payload.get("sessionId"),
+            "recentLogs": payload.get("recentLogs", []),
+        }
+        _log_agent_response(
+            "agent_logs_view",
+            "agent_runtime",
+            status=200,
+            payload=response_payload,
         )
+        return JsonResponse(response_payload)
     except Exception as exc:
         logger.error(
             "Response agent_logs_view status=500 message=Failed to read agent logs error=%s",
@@ -491,8 +538,16 @@ def agent_logs_view(request):
 
 @require_GET
 def agent_proposals_view(request):
+    _log_agent_request("agent_proposals_view", "agent_runtime")
     try:
-        return JsonResponse({"proposals": agent_runtime.proposals_payload()})
+        proposals = agent_runtime.proposals_payload()
+        _log_agent_response(
+            "agent_proposals_view",
+            "agent_runtime",
+            status=200,
+            proposals=proposals,
+        )
+        return JsonResponse({"proposals": proposals})
     except Exception as exc:
         logger.error(
             "Response agent_proposals_view status=500 message=Failed to read proposals error=%s",
@@ -504,8 +559,10 @@ def agent_proposals_view(request):
 
 @require_http_methods(["POST"])
 def agent_approve_view(request, proposal_id: str):
+    _log_agent_request("agent_approve_view", "agent_runtime", proposal_id=proposal_id)
     try:
         payload = agent_runtime.approve(proposal_id)
+        _log_agent_response("agent_approve_view", "agent_runtime", status=200, payload=payload)
         return JsonResponse(payload)
     except Exception as exc:
         logger.error(
@@ -518,8 +575,10 @@ def agent_approve_view(request, proposal_id: str):
 
 @require_http_methods(["POST"])
 def agent_reject_view(request, proposal_id: str):
+    _log_agent_request("agent_reject_view", "agent_runtime", proposal_id=proposal_id)
     try:
         payload = agent_runtime.reject(proposal_id)
+        _log_agent_response("agent_reject_view", "agent_runtime", status=200, payload=payload)
         return JsonResponse(payload)
     except Exception as exc:
         logger.error(
@@ -532,9 +591,10 @@ def agent_reject_view(request, proposal_id: str):
 
 @require_GET
 def agent_portfolio_view(request):
+    _log_agent_request("agent_portfolio_view", "agent_runtime")
     try:
         payload = agent_runtime.session_payload()
-        return JsonResponse({
+        response_payload = {
             "sessionId": payload.get("sessionId"),
             "portfolioSummary": payload.get("portfolioSummary", {}),
             "cash": payload.get("cash"),
@@ -545,7 +605,14 @@ def agent_portfolio_view(request):
             "riskLevel": payload.get("riskLevel"),
             "capabilities": payload.get("capabilities", {}),
             "streamingConnected": payload.get("streamingConnected", False),
-        })
+        }
+        _log_agent_response(
+            "agent_portfolio_view",
+            "agent_runtime",
+            status=200,
+            payload=response_payload,
+        )
+        return JsonResponse(response_payload)
     except Exception as exc:
         logger.error(
             "Response agent_portfolio_view status=500 message=Failed to read portfolio error=%s",
@@ -557,9 +624,10 @@ def agent_portfolio_view(request):
 
 @require_GET
 def agent_health_view(request):
+    _log_agent_request("agent_health_view", "agent_runtime")
     try:
         payload = agent_runtime.session_payload()
-        return JsonResponse({
+        response_payload = {
             "sessionId": payload.get("sessionId"),
             "status": payload.get("status"),
             "heartbeatAt": payload.get("heartbeatAt"),
@@ -570,7 +638,14 @@ def agent_health_view(request):
             "lastFeedSync": payload.get("lastFeedSync"),
             "lastWatchlistSync": payload.get("lastWatchlistSync"),
             "streamingConnected": payload.get("streamingConnected", False),
-        })
+        }
+        _log_agent_response(
+            "agent_health_view",
+            "agent_runtime",
+            status=200,
+            payload=response_payload,
+        )
+        return JsonResponse(response_payload)
     except Exception as exc:
         logger.error(
             "Response agent_health_view status=500 message=Failed to read health error=%s",
@@ -582,10 +657,17 @@ def agent_health_view(request):
 
 @require_http_methods(["POST"])
 def crypto_agent_start_view(request):
+    _log_agent_request("crypto_agent_start_view", "crypto_agent_runtime")
     try:
         session = crypto_agent_runtime.start()
         payload = crypto_agent_runtime.session_payload()
         payload["sessionId"] = str(session.session_id)
+        _log_agent_response(
+            "crypto_agent_start_view",
+            "crypto_agent_runtime",
+            status=200,
+            payload=payload,
+        )
         return JsonResponse(payload)
     except Exception as exc:
         logger.error(
@@ -599,9 +681,17 @@ def crypto_agent_start_view(request):
 
 @require_http_methods(["POST"])
 def crypto_agent_stop_view(request):
+    _log_agent_request("crypto_agent_stop_view", "crypto_agent_runtime")
     try:
         crypto_agent_runtime.stop()
-        return JsonResponse(crypto_agent_runtime.session_payload())
+        payload = crypto_agent_runtime.session_payload()
+        _log_agent_response(
+            "crypto_agent_stop_view",
+            "crypto_agent_runtime",
+            status=200,
+            payload=payload,
+        )
+        return JsonResponse(payload)
     except Exception as exc:
         logger.error(
             "Response crypto_agent_stop_view status=400 "
@@ -614,8 +704,16 @@ def crypto_agent_stop_view(request):
 
 @require_GET
 def crypto_agent_session_view(request):
+    _log_agent_request("crypto_agent_session_view", "crypto_agent_runtime")
     try:
-        return JsonResponse(crypto_agent_runtime.session_payload())
+        payload = crypto_agent_runtime.session_payload()
+        _log_agent_response(
+            "crypto_agent_session_view",
+            "crypto_agent_runtime",
+            status=200,
+            payload=payload,
+        )
+        return JsonResponse(payload)
     except Exception as exc:
         logger.error(
             "Response crypto_agent_session_view status=500 "
@@ -628,11 +726,20 @@ def crypto_agent_session_view(request):
 
 @require_GET
 def crypto_agent_logs_view(request):
+    _log_agent_request("crypto_agent_logs_view", "crypto_agent_runtime")
     try:
         payload = crypto_agent_runtime.session_payload()
-        return JsonResponse(
-            {"sessionId": payload.get("sessionId"), "recentLogs": payload.get("recentLogs", [])}
+        response_payload = {
+            "sessionId": payload.get("sessionId"),
+            "recentLogs": payload.get("recentLogs", []),
+        }
+        _log_agent_response(
+            "crypto_agent_logs_view",
+            "crypto_agent_runtime",
+            status=200,
+            payload=response_payload,
         )
+        return JsonResponse(response_payload)
     except Exception as exc:
         logger.error(
             "Response crypto_agent_logs_view status=500 "
@@ -645,8 +752,16 @@ def crypto_agent_logs_view(request):
 
 @require_GET
 def crypto_agent_proposals_view(request):
+    _log_agent_request("crypto_agent_proposals_view", "crypto_agent_runtime")
     try:
-        return JsonResponse({"proposals": crypto_agent_runtime.proposals_payload()})
+        proposals = crypto_agent_runtime.proposals_payload()
+        _log_agent_response(
+            "crypto_agent_proposals_view",
+            "crypto_agent_runtime",
+            status=200,
+            proposals=proposals,
+        )
+        return JsonResponse({"proposals": proposals})
     except Exception as exc:
         logger.error(
             "Response crypto_agent_proposals_view status=500 "
@@ -659,8 +774,15 @@ def crypto_agent_proposals_view(request):
 
 @require_http_methods(["POST"])
 def crypto_agent_approve_view(request, proposal_id: str):
+    _log_agent_request("crypto_agent_approve_view", "crypto_agent_runtime", proposal_id=proposal_id)
     try:
         payload = crypto_agent_runtime.approve(proposal_id)
+        _log_agent_response(
+            "crypto_agent_approve_view",
+            "crypto_agent_runtime",
+            status=200,
+            payload=payload,
+        )
         return JsonResponse(payload)
     except Exception as exc:
         logger.error(
@@ -674,8 +796,15 @@ def crypto_agent_approve_view(request, proposal_id: str):
 
 @require_http_methods(["POST"])
 def crypto_agent_reject_view(request, proposal_id: str):
+    _log_agent_request("crypto_agent_reject_view", "crypto_agent_runtime", proposal_id=proposal_id)
     try:
         payload = crypto_agent_runtime.reject(proposal_id)
+        _log_agent_response(
+            "crypto_agent_reject_view",
+            "crypto_agent_runtime",
+            status=200,
+            payload=payload,
+        )
         return JsonResponse(payload)
     except Exception as exc:
         logger.error(

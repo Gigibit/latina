@@ -72,3 +72,18 @@ def test_crypto_agent_session_view(monkeypatch):
     assert response.status_code == 200
     payload = json.loads(response.content)
     assert payload["sessionId"] == "sid-1"
+
+
+def test_agent_proposals_view_logs_service_and_count(monkeypatch, caplog):
+    monkeypatch.setattr(views, "agent_runtime", DummyRuntime())
+    caplog.set_level("INFO", logger="trading_bot.bot.views")
+
+    request = RequestFactory().get("/api/agent/proposals")
+    response = views.agent_proposals_view(request)
+
+    assert response.status_code == 200
+    assert "Request agent_proposals_view service=agent_runtime" in caplog.text
+    assert (
+        "Response agent_proposals_view status=200 service=agent_runtime "
+        "session_id=None proposals_count=1"
+    ) in caplog.text
