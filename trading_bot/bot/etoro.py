@@ -23,6 +23,10 @@ def _state_file_path() -> Path:
     return Path(configured_path)
 
 
+def _http_log_enabled() -> bool:
+    return _is_env_flag_enabled("HTTP_LOG_ENABLED", True)
+
+
 def _load_state() -> dict:
     path = _state_file_path()
     if not path.exists():
@@ -66,6 +70,11 @@ def _record_execution(symbol: str, action: str) -> None:
 
 def execute_etoro_action(symbol: str, action: str, confidence: int | float | None = None) -> dict:
     normalized_action = action.upper()
+    logger.debug(
+        "Evaluating this symbol for eToro execution: symbol=%s action=%s",
+        symbol.upper(),
+        normalized_action,
+    )
     if not _is_env_flag_enabled("ETORO_AUTOTRADE_ENABLED", False):
         return {"status": "disabled", "reason": "ETORO_AUTOTRADE_ENABLED is false"}
 
@@ -98,6 +107,12 @@ def execute_etoro_action(symbol: str, action: str, confidence: int | float | Non
     base_url = os.getenv("ETORO_API_BASE_URL", "").rstrip("/")
     api_key = os.getenv("ETORO_API_KEY")
     if not base_url or not api_key:
+        logger.error(
+            "eToro execution failed for symbol=%s action=%s: "
+            "missing ETORO_API_BASE_URL or ETORO_API_KEY",
+            symbol.upper(),
+            normalized_action,
+        )
         return {
             "status": "error",
             "reason": "Missing ETORO_API_BASE_URL or ETORO_API_KEY",
@@ -123,18 +138,33 @@ def execute_etoro_action(symbol: str, action: str, confidence: int | float | Non
         method="POST",
     )
 
-    logger.debug("eToro request body: %s", payload)
+    logger.debug("Calling this service for eToro order execution: %s", endpoint)
+    if _http_log_enabled():
+        logger.debug("eToro request body: %s", payload)
 
     try:
         with urlopen(request, timeout=15) as response:
             response_body = response.read().decode("utf-8")
-        logger.debug("eToro response body: %s", response_body)
+        if _http_log_enabled():
+            logger.debug("eToro response body: %s", response_body)
     except HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="replace") if hasattr(exc, "read") else ""
-        if error_body:
+        if error_body and _http_log_enabled():
             logger.debug("eToro error response body: %s", error_body)
+        logger.error(
+            "eToro API HTTP error for symbol=%s action=%s: status=%s",
+            symbol.upper(),
+            normalized_action,
+            exc.code,
+        )
         return {"status": "error", "reason": f"eToro API HTTP error {exc.code}"}
     except URLError as exc:
+        logger.error(
+            "eToro API connection error for symbol=%s action=%s: %s",
+            symbol.upper(),
+            normalized_action,
+            exc.reason,
+        )
         return {"status": "error", "reason": f"eToro API connection error: {exc.reason}"}
 
     _record_execution(symbol, normalized_action)
