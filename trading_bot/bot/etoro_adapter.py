@@ -261,13 +261,21 @@ class EtoroAdapter:
 
 def build_etoro_adapter() -> EtoroAdapter:
     api_key = os.getenv("ETORO_API_KEY")
-    base_url = os.getenv("ETORO_API_BASE_URL", "https://public-api.etoro.com/api/v1")
+    base_url = os.getenv("ETORO_API_BASE_URL", "https://public-api.etoro.com/api/v1").strip()
+    user_key = os.getenv("ETORO_USER_KEY", "").strip()
     if not api_key:
         logger.error("eToro adapter configuration invalid: ETORO_API_KEY is missing")
         raise ValueError("ETORO_API_KEY is missing")
+    if "public-api.etoro.com" in base_url and not user_key:
+        message = (
+            "eToro adapter configuration invalid: ETORO_USER_KEY is required when "
+            "ETORO_API_BASE_URL points to public-api.etoro.com"
+        )
+        logger.error(message)
+        raise ValueError(message)
     return EtoroAdapter(
         api_key=api_key,
         base_url=base_url,
         ws_url=os.getenv("ETORO_WS_URL"),
-        user_key=os.getenv("ETORO_USER_KEY"),
+        user_key=user_key,
     )

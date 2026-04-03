@@ -7,7 +7,7 @@ from urllib.error import HTTPError
 import pytest
 
 from trading_bot.bot.binance_adapter import BinanceAdapter
-from trading_bot.bot.etoro_adapter import EtoroAdapter
+from trading_bot.bot.etoro_adapter import EtoroAdapter, build_etoro_adapter
 
 
 def test_etoro_adapter_includes_http_error_body(monkeypatch):
@@ -190,3 +190,24 @@ def test_etoro_adapter_websocket_auth_failure(monkeypatch):
         adapter.authenticateWebsocket()
 
     assert "errorCode=Forbidden" in str(exc.value)
+
+
+def test_build_etoro_adapter_requires_user_key_for_public_api(monkeypatch):
+    monkeypatch.setenv("ETORO_API_KEY", "token")
+    monkeypatch.setenv("ETORO_API_BASE_URL", "https://public-api.etoro.com/api/v1")
+    monkeypatch.delenv("ETORO_USER_KEY", raising=False)
+
+    with pytest.raises(ValueError) as exc:
+        build_etoro_adapter()
+
+    assert "ETORO_USER_KEY is required" in str(exc.value)
+
+
+def test_build_etoro_adapter_allows_missing_user_key_for_non_public_api(monkeypatch):
+    monkeypatch.setenv("ETORO_API_KEY", "token")
+    monkeypatch.setenv("ETORO_API_BASE_URL", "https://broker.example.test/v1")
+    monkeypatch.delenv("ETORO_USER_KEY", raising=False)
+
+    adapter = build_etoro_adapter()
+
+    assert adapter.user_key == ""
