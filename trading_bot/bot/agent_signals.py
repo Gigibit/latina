@@ -70,7 +70,11 @@ def detect_capabilities(adapter: Any) -> dict[str, bool]:
         "supportsAgentPortfolios": "getAgentPortfolioCompatibility",
     }
     for capability, method_name in optional_methods.items():
-        registry[capability] = registry[capability] and hasattr(adapter, method_name)
+        method_is_available = hasattr(adapter, method_name)
+        adapter_supports = getattr(adapter, "supported_capabilities", {})
+        if isinstance(adapter_supports, dict) and capability in adapter_supports:
+            method_is_available = method_is_available and bool(adapter_supports[capability])
+        registry[capability] = registry[capability] and method_is_available
 
     if (
         not registry.get("supportsDemoTrading", True)
