@@ -147,7 +147,54 @@ def test_research_job_uses_manual_symbols_when_auto_detection_disabled(monkeypat
     assert job.status == "completed"
     assert job.result is not None
     assert job.result["symbol"] == "AAPL"
-    assert any("Auto symbol detection disabled" in line for line in job.stream_log)
+    assert any("Using symbols provided by user input" in line for line in job.stream_log)
+
+
+def test_research_job_prefers_manual_symbols_when_auto_detection_enabled(monkeypatch):
+    monkeypatch.setenv("AUTO_DETECTION_SYMBOL_NUMBER", "7")
+
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.fetch_trending_symbols",
+        lambda limit: ["AUTO"],
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.get_market_snapshot",
+        lambda symbol: SimpleNamespace(
+            symbol=symbol,
+            latest_volume=100.0,
+            avg_volume_20d=100.0,
+            pct_change_5d=2.0 if symbol == "SPY" else 1.0,
+        ),
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.fetch_x_sentiment_scores",
+        lambda symbol, days: {day: 0.1 for day in days},
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.generate_suggestion",
+        lambda symbol, user_risk_profile: {
+            "symbol": symbol,
+            "decision": {
+                "action": "BUY",
+                "confidence": 85,
+                "risk_notes": "ok",
+            },
+        },
+    )
+
+    store = ResearchSessionStore()
+    job = ResearchJob(
+        session_id="s2-manual",
+        risk_profile="medium",
+        candidate_symbols=["SPY", "QQQ"],
+    )
+
+    store._run_job(job)
+
+    assert job.status == "completed"
+    assert job.result is not None
+    assert job.result["symbol"] == "SPY"
+    assert any("Using symbols provided by user input" in line for line in job.stream_log)
 
 
 
@@ -268,6 +315,33 @@ def test_trading_suggestion_view_async_returns_session_status(monkeypatch):
     assert response.status_code == 200
     assert b'"session_id": "test-session"' in response.content
     assert b'"status": "running"' in response.content
+
+
+def test_trading_suggestion_view_async_passes_symbol_as_candidate(monkeypatch):
+    captured = {}
+    fake_job = SimpleNamespace(
+        status="running",
+        stream_log=["[10:00:00] Research session started."],
+        result=None,
+        error=None,
+    )
+
+    def _fake_get_or_create(session_id, risk_profile, candidate_symbols):
+        captured["candidate_symbols"] = candidate_symbols
+        return fake_job
+
+    monkeypatch.setattr(
+        "trading_bot.bot.views.research_sessions.get_or_create",
+        _fake_get_or_create,
+    )
+
+    request = RequestFactory().get(
+        "/api/suggestion/?async=true&session_id=test-session&risk=low&symbol=SPY"
+    )
+    response = trading_suggestion_view(request)
+
+    assert response.status_code == 200
+    assert captured["candidate_symbols"] == ["SPY"]
 
 
 def test_discover_symbol_requires_manual_symbols_when_auto_detection_disabled(monkeypatch):

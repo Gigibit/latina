@@ -312,7 +312,17 @@ class ResearchSessionStore:
         self._append_log(job, "Scraping trending symbols and sentiment signals from web data.")
         logger.info("Research workload discovery started session_id=%s", job.session_id)
         auto_detection_symbol_number = self._auto_detection_symbol_number()
-        if auto_detection_symbol_number > 0:
+        manual_symbols = [symbol.upper() for symbol in (job.candidate_symbols or []) if symbol]
+
+        if manual_symbols:
+            symbols = manual_symbols
+            logger.info(
+                "Research workload explicit symbols provided session_id=%s count=%s",
+                job.session_id,
+                len(symbols),
+            )
+            self._append_log(job, "Using symbols provided by user input.")
+        elif auto_detection_symbol_number > 0:
             symbols = fetch_trending_symbols(limit=auto_detection_symbol_number)
             logger.info(
                 "Research workload auto-detection symbols fetched session_id=%s count=%s",
