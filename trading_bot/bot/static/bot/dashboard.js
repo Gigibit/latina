@@ -69,7 +69,3 @@ monitorForm.addEventListener("submit", (event) => {
   const limit = document.getElementById("news-limit").value;
   fetchAndRender(`/api/market-monitor/?limit=${encodeURIComponent(limit)}`, monitorOutput);
 });
-
-suggestionForm.requestSubmit();
-candidatesForm.requestSubmit();
-monitorForm.requestSubmit();
