@@ -308,20 +308,44 @@ def _extract_etoro_instrument_ids(payload: object) -> list[int]:
     if isinstance(payload, list):
         watchlists = payload
     elif isinstance(payload, dict):
-        watchlists = payload.get("watchlists", [])
+        watchlists = (
+            payload.get("watchlists")
+            or payload.get("Watchlists")
+            or payload.get("data", {}).get("watchlists")
+            or payload.get("Data", {}).get("Watchlists")
+            or []
+        )
     else:
         watchlists = []
     instrument_ids: list[int] = []
     for watchlist in watchlists:
         if not isinstance(watchlist, dict):
             continue
-        items = watchlist.get("Items", [])
+        items = (
+            watchlist.get("Items")
+            or watchlist.get("items")
+            or watchlist.get("Instruments")
+            or watchlist.get("instruments")
+            or []
+        )
         if not isinstance(items, list):
             continue
         for item in items:
             if not isinstance(item, dict):
                 continue
-            instrument_id = item.get("Instrument")
+            raw_instrument_id = (
+                item.get("Instrument")
+                or item.get("instrument")
+                or item.get("InstrumentID")
+                or item.get("InstrumentId")
+                or item.get("instrumentId")
+            )
+            instrument_id = None
+            if isinstance(raw_instrument_id, int):
+                instrument_id = raw_instrument_id
+            elif isinstance(raw_instrument_id, str) and raw_instrument_id.isdigit():
+                instrument_id = int(raw_instrument_id)
+
             if isinstance(instrument_id, int) and instrument_id not in instrument_ids:
                 instrument_ids.append(instrument_id)
     return instrument_ids
