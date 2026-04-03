@@ -124,6 +124,13 @@
         <button id="agent-start" type="button">Start</button>
         <button id="agent-stop" type="button" class="secondary">Stop</button>
       </div>
+      <div class="card auto-decision-card">
+        <label class="switch-row" for="agent-autodecision-toggle">
+          <span>Autodecisional mode</span>
+          <input id="agent-autodecision-toggle" type="checkbox" />
+        </label>
+        <p class="switch-help">When enabled, pending proposals are approved automatically.</p>
+      </div>
       <details class="card collapsible-output" open>
         <summary>Agent session</summary>
         <pre id="agent-session-output" class="output compact"></pre>
@@ -141,6 +148,26 @@
         <summary>Agent logs</summary>
         <pre id="agent-logs-output" class="output compact"></pre>
       </details>
+      <div class="card">
+        <h3>Decisions taken</h3>
+        <div class="decision-table-wrap">
+          <table class="decision-table">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Confidence</th>
+                <th>Action</th>
+                <th>Quantity</th>
+              </tr>
+            </thead>
+            <tbody id="agent-decisions-body">
+              <tr>
+                <td colspan="4">No decisions yet.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
     </section>
 
     <section id="section-agent-review-crypto" class="section" data-section="agent-review-crypto">

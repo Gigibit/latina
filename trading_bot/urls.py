@@ -2,6 +2,7 @@ from django.urls import path
 
 from trading_bot.bot.views import (
     agent_approve_view,
+    agent_decisions_view,
     agent_health_view,
     agent_logs_view,
     agent_portfolio_view,
@@ -37,6 +38,7 @@ urlpatterns = [
     path("api/agent/session", agent_session_view, name="agent-session"),
     path("api/agent/logs", agent_logs_view, name="agent-logs"),
     path("api/agent/proposals", agent_proposals_view, name="agent-proposals"),
+    path("api/agent/decisions", agent_decisions_view, name="agent-decisions"),
     path("api/agent/proposals/<str:proposal_id>/approve", agent_approve_view, name="agent-approve"),
     path("api/agent/proposals/<str:proposal_id>/reject", agent_reject_view, name="agent-reject"),
     path("api/agent/portfolio", agent_portfolio_view, name="agent-portfolio"),

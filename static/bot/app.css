@@ -162,6 +162,46 @@ button {
   gap: .6rem;
 }
 
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.switch-row input[type='checkbox'] {
+  width: 1.2rem;
+  height: 1.2rem;
+}
+
+.switch-help {
+  margin: 0.5rem 0 0;
+  color: var(--muted);
+}
+
+.decision-table-wrap {
+  overflow-x: auto;
+}
+
+.decision-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+}
+
+.decision-table th,
+.decision-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.45rem 0.4rem;
+  text-align: left;
+}
+
+.decision-table th {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
 .badge {
   display: inline-block;
   margin-left: .4rem;

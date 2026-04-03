@@ -404,6 +404,25 @@ class AgentRuntime:
             for item in proposals
         ]
 
+    def decisions_payload(self, limit: int = 25) -> list[dict[str, Any]]:
+        if not self._session:
+            return []
+        decisions = AgentProposal.objects.filter(session=self._session).exclude(
+            status="pending_user"
+        ).order_by("-created_at")[:limit]
+        return [
+            {
+                "proposalId": str(item.proposal_id),
+                "symbol": item.symbol,
+                "confidence": item.confidence,
+                "action": item.action,
+                "quantity": item.size,
+                "status": item.status,
+                "createdAt": item.created_at,
+            }
+            for item in decisions
+        ]
+
     def _is_risk_veto(self, fused: dict[str, Any]) -> bool:
         return fused.get("proposalType") == "REQUIRE_REVIEW"
 

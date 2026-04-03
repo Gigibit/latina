@@ -46,6 +46,9 @@ class DummyRuntime:
     def reject(self, proposal_id: str):
         return {"proposalId": proposal_id, "status": "rejected"}
 
+    def decisions_payload(self):
+        return [{"symbol": "AAPL", "confidence": 0.82, "action": "BUY", "quantity": 10}]
+
 
 def test_agent_session_view(monkeypatch):
     monkeypatch.setattr(views, "agent_runtime", DummyRuntime())
@@ -87,6 +90,17 @@ def test_agent_proposals_view_logs_service_and_count(monkeypatch, caplog):
         "Response agent_proposals_view status=200 service=agent_runtime "
         "session_id=None proposals_count=1"
     ) in caplog.text
+
+
+def test_agent_decisions_view_returns_decisions(monkeypatch):
+    monkeypatch.setattr(views, "agent_runtime", DummyRuntime())
+    request = RequestFactory().get("/api/agent/decisions")
+
+    response = views.agent_decisions_view(request)
+
+    assert response.status_code == 200
+    payload = json.loads(response.content)
+    assert payload["decisions"][0]["symbol"] == "AAPL"
 
 
 def test_agent_session_view_exposes_guided_error_payload(monkeypatch):
