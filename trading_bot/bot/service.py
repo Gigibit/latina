@@ -4,6 +4,7 @@ import logging
 import os
 from statistics import mean
 
+from trading_bot.bot.candidate_universe import build_candidate_universe
 from trading_bot.bot.data_sources import (
     average_macro_delta,
     compute_technical_indicators,
@@ -25,15 +26,6 @@ DEFAULT_CHUNKIZATION_MODE = "DEFAULT"
 INTROSPECTIVE_CANDLE_CHUNKIZATION_MODE = "INTROSPECTIVE_CANDLE"
 
 logger = logging.getLogger(__name__)
-
-EUROPE_TRENDING_REGIONS = (
-    "IT", "FR", "GB", "AL", "AD", "AT", "BE", "BA", "BG", "BY", "CH", "CY",
-    "CZ", "DK", "EE", "ES", "FI", "GR", "HR", "HU", "IE", "IS", "LI", "LT",
-    "LU", "LV", "MC", "MD", "ME", "MK", "MT", "NL", "NO", "PL", "PT", "RO",
-    "RS", "RU", "SE", "SI", "SK", "SM", "TR", "UA", "VA",
-)
-TRENDING_REGIONS = ("US", *EUROPE_TRENDING_REGIONS)
-
 
 def _resolve_chunkization_mode() -> str:
     mode = os.getenv("CHUNKIZATION_MODE", DEFAULT_CHUNKIZATION_MODE).strip().upper()
@@ -388,28 +380,17 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
 
 
 def get_best_candidates(limit: int = 5, user_risk_profile: str = "medium") -> dict:
-    symbols_by_zone: dict[str, str] = {}
-    for region in TRENDING_REGIONS:
-        try:
-            region_symbols = fetch_trending_symbols(region=region, limit=max(limit * 2, 6))
-        except RuntimeError as exc:
-            logger.warning(
-                "Skipping trending region=%s due to upstream error: %s",
-                region,
-                exc,
-            )
-            continue
-
-        for symbol in region_symbols:
-            symbols_by_zone.setdefault(symbol, region)
-
-    if not symbols_by_zone:
-        raise RuntimeError("Unable to fetch trending symbols from Yahoo Finance.")
-
-    deduplicated_symbols = list(symbols_by_zone)[: max(limit * 3, 10)]
+    universe = build_candidate_universe(
+        target_size=max(limit * 3, 10),
+        min_avg_volume_20d=1.0,
+        min_latest_close=0.01,
+        fetch_symbols_fn=fetch_trending_symbols,
+        snapshot_fn=get_market_snapshot,
+    )
     candidates = []
 
-    for symbol in deduplicated_symbols:
+    for row in universe:
+        symbol = row["symbol"]
         try:
             snapshot = get_market_snapshot(symbol)
         except ValueError:
@@ -429,7 +410,7 @@ def get_best_candidates(limit: int = 5, user_risk_profile: str = "medium") -> di
                 "pct_change_20d": round(snapshot.pct_change_20d, 2),
                 "relative_volume": round(relative_volume, 2),
                 "score": round(score, 2),
-                "zone": symbols_by_zone.get(symbol, "unknown"),
+                "zone": row["region"],
             }
         )
 
