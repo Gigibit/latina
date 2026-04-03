@@ -28,6 +28,7 @@ from trading_bot.bot.agent_signals import (
 )
 from trading_bot.bot.attention_engine import AttentionEngine
 from trading_bot.bot.binance_adapter import build_binance_adapter
+from trading_bot.bot.data_sources import fetch_trending_symbols
 from trading_bot.bot.etoro_adapter import build_etoro_adapter
 from trading_bot.bot.event_pipeline import (
     EventBus,
@@ -166,6 +167,66 @@ class AgentRuntime:
         if normalized in WRITE_ACTIONS:
             return normalized
         return EXECUTION_ACTIONS.get(normalized)
+
+    def _extract_symbols_from_lists(self, lists: list[dict[str, Any]]) -> list[str]:
+        extracted: list[str] = []
+        for item in lists:
+            entries = item.get("symbols", [])
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if isinstance(entry, str):
+                    symbol = entry.strip().upper()
+                elif isinstance(entry, dict):
+                    symbol = str(entry.get("symbol", "")).strip().upper()
+                else:
+                    symbol = ""
+                if symbol:
+                    extracted.append(symbol)
+        return extracted
+
+    def _select_analysis_symbol(
+        self,
+        adapter: Any,
+        positions: list[dict[str, Any]],
+        capabilities: dict[str, bool],
+    ) -> str:
+        if capabilities.get("supportsWatchlists"):
+            try:
+                watchlists = adapter.getWatchlists()
+            except Exception as exc:
+                logger.error("watchlist selection failed error=%s", exc)
+            else:
+                watchlist_symbols = self._extract_symbols_from_lists(watchlists)
+                if watchlist_symbols:
+                    return watchlist_symbols[0]
+
+        if capabilities.get("supportsCuratedLists"):
+            try:
+                curated_lists = adapter.getCuratedLists()
+            except Exception as exc:
+                logger.error("curated selection failed error=%s", exc)
+            else:
+                curated_symbols = self._extract_symbols_from_lists(curated_lists)
+                if curated_symbols:
+                    return curated_symbols[0]
+
+        position_symbols = [
+            str(item.get("symbol", "")).strip().upper()
+            for item in positions
+            if str(item.get("symbol", "")).strip()
+        ]
+        if position_symbols:
+            return position_symbols[0]
+
+        try:
+            trending = fetch_trending_symbols(limit=5)
+        except Exception as exc:
+            logger.error("trending fallback selection failed error=%s", exc)
+            return "SPY"
+        if trending:
+            return str(trending[0]).strip().upper()
+        return "SPY"
 
     def _validate_broker_config(self) -> None:
         if self._market == "crypto":
@@ -919,12 +980,11 @@ class AgentRuntime:
                 available_slots = self._config.max_open_proposals - pending
                 if available_slots > 0:
                     new_candidates: list[dict[str, Any]] = []
-                    symbols = [
-                        str(item.get("symbol", "")).upper()
-                        for item in positions
-                        if item.get("symbol")
-                    ]
-                    symbol = symbols[0] if symbols else "SPY"
+                    symbol = self._select_analysis_symbol(
+                        adapter=adapter,
+                        positions=positions,
+                        capabilities=capabilities,
+                    )
                     context = self._build_signal_context(
                         adapter,
                         symbol,

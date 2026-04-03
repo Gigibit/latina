@@ -95,3 +95,46 @@ def test_resolve_execution_action_supports_direct_and_candidate_actions(
     runtime = AgentRuntime(market="trader")
 
     assert runtime._resolve_execution_action(proposal_action) == expected
+
+
+def test_select_analysis_symbol_prioritizes_watchlist_symbols(monkeypatch):
+    runtime = AgentRuntime(market="trader")
+
+    class DummyAdapter:
+        def getWatchlists(self):
+            return [{"symbols": ["TSLA", "NVDA"]}]
+
+        def getCuratedLists(self):
+            return [{"symbols": ["AAPL"]}]
+
+    symbol = runtime._select_analysis_symbol(
+        adapter=DummyAdapter(),
+        positions=[{"symbol": "SPY"}],
+        capabilities={"supportsWatchlists": True, "supportsCuratedLists": True},
+    )
+
+    assert symbol == "TSLA"
+
+
+def test_select_analysis_symbol_falls_back_to_trending_when_no_watchlist_or_positions(monkeypatch):
+    runtime = AgentRuntime(market="trader")
+
+    class DummyAdapter:
+        def getWatchlists(self):
+            return []
+
+        def getCuratedLists(self):
+            return []
+
+    monkeypatch.setattr(
+        "trading_bot.bot.agent_runtime.fetch_trending_symbols",
+        lambda limit=5: ["AMD", "QQQ"],
+    )
+
+    symbol = runtime._select_analysis_symbol(
+        adapter=DummyAdapter(),
+        positions=[],
+        capabilities={"supportsWatchlists": False, "supportsCuratedLists": False},
+    )
+
+    assert symbol == "AMD"
