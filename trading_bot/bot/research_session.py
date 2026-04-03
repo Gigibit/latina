@@ -27,6 +27,26 @@ DEFAULT_RATE_LIMIT_BASE_BACKOFF_SECONDS = 2.0
 MAX_RATE_LIMIT_BACKOFF_SECONDS = 60.0
 
 
+def _log_structured_error(
+    *,
+    event: str,
+    message: str,
+    session_id: str | None = None,
+    symbol: str | None = None,
+    status_code: int | None = None,
+    error_type: str | None = None,
+) -> None:
+    logger.error(
+        "event=%s session_id=%s symbol=%s status_code=%s error_type=%s message=%s",
+        event,
+        session_id or "n/a",
+        symbol or "n/a",
+        str(status_code) if status_code is not None else "n/a",
+        error_type or "n/a",
+        message,
+    )
+
+
 def _build_summary_decider() -> LLMDecider:
     provider = os.getenv("LLM_PROVIDER", "openai")
     if provider == "openai":
@@ -46,18 +66,28 @@ def _is_env_flag_enabled(name: str, default: bool = True) -> bool:
 
 
 def _summarize_result_with_llm(payload: dict[str, Any]) -> str:
+    symbol = str(payload.get("symbol", "N/A"))
     try:
         decider = _build_summary_decider()
         summary = decider.summarize_json(payload)
         if summary:
             return summary
     except Exception as exc:
-        logger.error("Failed to summarize result with llm error=%s", exc)
+        _log_structured_error(
+            event="llm_summary_generation_failed",
+            session_id=str(payload.get("session_id", "n/a")),
+            symbol=symbol,
+            status_code=None,
+            error_type=type(exc).__name__,
+            message=(
+                "Failed to summarize research result via LLM. "
+                "Falling back to deterministic summary."
+            ),
+        )
     decision = payload.get("decision", {})
     action = str(decision.get("action", "HOLD"))
     confidence = decision.get("confidence", "n/a")
     risk_notes = str(decision.get("risk_notes", "No risk notes available."))
-    symbol = str(payload.get("symbol", "N/A"))
     return (
         f"- Symbol: {symbol}\n"
         f"- Action: {action} (confidence: {confidence})\n"
@@ -225,9 +255,10 @@ class ResearchSessionStore:
         try:
             ttl = int(raw_value)
         except ValueError:
-            logger.error(
-                "Invalid DISCOVERY_CACHE_TTL_SECONDS=%s, fallback to 60 seconds.",
-                raw_value,
+            _log_structured_error(
+                event="config_invalid_discovery_cache_ttl_seconds",
+                error_type="ValueError",
+                message=f"Invalid DISCOVERY_CACHE_TTL_SECONDS={raw_value}; fallback to 60 seconds.",
             )
             return 60
         return min(max(ttl, 30), 120)
@@ -238,9 +269,13 @@ class ResearchSessionStore:
         try:
             timeout = float(raw_value)
         except ValueError:
-            logger.error(
-                "Invalid DISCOVERY_SYMBOL_TIMEOUT_SECONDS=%s, fallback to 6 seconds.",
-                raw_value,
+            _log_structured_error(
+                event="config_invalid_discovery_symbol_timeout_seconds",
+                error_type="ValueError",
+                message=(
+                    f"Invalid DISCOVERY_SYMBOL_TIMEOUT_SECONDS={raw_value}; "
+                    "fallback to 6 seconds."
+                ),
             )
             return 6.0
         return max(timeout, 1.0)
@@ -252,9 +287,13 @@ class ResearchSessionStore:
             try:
                 return max(min(int(configured), max(symbol_count, 1)), 1)
             except ValueError:
-                logger.error(
-                    "Invalid DISCOVERY_WORKER_THREADS=%s, using adaptive worker size.",
-                    configured,
+                _log_structured_error(
+                    event="config_invalid_discovery_worker_threads",
+                    error_type="ValueError",
+                    message=(
+                        f"Invalid DISCOVERY_WORKER_THREADS={configured}; "
+                        "using adaptive worker size."
+                    ),
                 )
         return max(min(symbol_count, 8), 1)
 
@@ -316,21 +355,24 @@ class ResearchSessionStore:
         try:
             snapshot = self._cached_market_snapshot(symbol)
         except ValueError as exc:
-            logger.error(
-                "Skipping symbol due to insufficient market history "
-                "session_id=%s symbol=%s error=%s",
-                job.session_id,
-                symbol,
-                exc,
+            _log_structured_error(
+                event="market_snapshot_insufficient_history",
+                session_id=job.session_id,
+                symbol=symbol,
+                status_code=None,
+                error_type=type(exc).__name__,
+                message="Skipping symbol due to insufficient market history.",
             )
             self._append_log(job, f"Skipping {symbol}: insufficient market history.")
             return None, (time.perf_counter() - started_at) * 1000
         except Exception as exc:
-            logger.error(
-                "Market snapshot failed session_id=%s symbol=%s error=%s",
-                job.session_id,
-                symbol,
-                exc,
+            _log_structured_error(
+                event="market_snapshot_failed",
+                session_id=job.session_id,
+                symbol=symbol,
+                status_code=None,
+                error_type=type(exc).__name__,
+                message="Market snapshot unavailable for symbol.",
             )
             self._append_log(job, f"Skipping {symbol}: market snapshot unavailable.")
             return None, (time.perf_counter() - started_at) * 1000
@@ -338,11 +380,13 @@ class ResearchSessionStore:
         try:
             sentiment_map = self._cached_sentiment_scores(symbol=symbol, days=last_days)
         except Exception as exc:
-            logger.error(
-                "Sentiment fetch failed session_id=%s symbol=%s error=%s",
-                job.session_id,
-                symbol,
-                exc,
+            _log_structured_error(
+                event="sentiment_fetch_failed",
+                session_id=job.session_id,
+                symbol=symbol,
+                status_code=None,
+                error_type=type(exc).__name__,
+                message="Sentiment source unavailable for symbol.",
             )
             self._append_log(job, f"Skipping {symbol}: sentiment source unavailable.")
             return None, (time.perf_counter() - started_at) * 1000
@@ -351,22 +395,27 @@ class ResearchSessionStore:
         try:
             technicals = compute_technical_indicators(symbol=symbol, lookback_days=min_history_days)
         except ValueError as exc:
-            logger.error(
-                "Skipping symbol due to insufficient technical history session_id=%s symbol=%s "
-                "required_history_days=%s error=%s",
-                job.session_id,
-                symbol,
-                min_history_days,
-                exc,
+            _log_structured_error(
+                event="technical_indicators_insufficient_history",
+                session_id=job.session_id,
+                symbol=symbol,
+                status_code=None,
+                error_type=type(exc).__name__,
+                message=(
+                    "Skipping symbol due to insufficient technical history "
+                    f"(required_history_days={min_history_days})."
+                ),
             )
             self._append_log(job, f"Skipping {symbol}: insufficient technical history.")
             return None, (time.perf_counter() - started_at) * 1000
         except Exception as exc:
-            logger.error(
-                "Technical indicators failed session_id=%s symbol=%s error=%s",
-                job.session_id,
-                symbol,
-                exc,
+            _log_structured_error(
+                event="technical_indicators_failed",
+                session_id=job.session_id,
+                symbol=symbol,
+                status_code=None,
+                error_type=type(exc).__name__,
+                message="Technical indicators unavailable for symbol.",
             )
             self._append_log(job, f"Skipping {symbol}: technical indicators unavailable.")
             return None, (time.perf_counter() - started_at) * 1000
@@ -424,7 +473,11 @@ class ResearchSessionStore:
         try:
             return max(int(raw_value), 60)
         except ValueError:
-            logger.error("Invalid DISCOVERY_MIN_HISTORY_DAYS=%s, fallback to 180.", raw_value)
+            _log_structured_error(
+                event="config_invalid_discovery_min_history_days",
+                error_type="ValueError",
+                message=f"Invalid DISCOVERY_MIN_HISTORY_DAYS={raw_value}; fallback to 180.",
+            )
             return 180
 
     @staticmethod
@@ -433,9 +486,10 @@ class ResearchSessionStore:
         try:
             return max(float(raw_value), 0.0)
         except ValueError:
-            logger.error(
-                "Invalid DISCOVERY_MIN_LIQUIDITY_PROXY=%s, fallback to 0.",
-                raw_value,
+            _log_structured_error(
+                event="config_invalid_discovery_min_liquidity_proxy",
+                error_type="ValueError",
+                message=f"Invalid DISCOVERY_MIN_LIQUIDITY_PROXY={raw_value}; fallback to 0.",
             )
             return 0.0
 
@@ -445,7 +499,11 @@ class ResearchSessionStore:
         try:
             return max(float(raw_value), 0.1)
         except ValueError:
-            logger.error("Invalid DISCOVERY_MAX_VOLATILITY_5D_PCT=%s, fallback to 12.", raw_value)
+            _log_structured_error(
+                event="config_invalid_discovery_max_volatility_5d_pct",
+                error_type="ValueError",
+                message=f"Invalid DISCOVERY_MAX_VOLATILITY_5D_PCT={raw_value}; fallback to 12.",
+            )
             return 12.0
 
     @staticmethod
@@ -453,18 +511,20 @@ class ResearchSessionStore:
         raw_value = os.getenv("DISCOVERY_FEATURE_NORMALIZATION", "zscore").strip().lower()
         if raw_value in {"zscore", "minmax"}:
             return raw_value
-        logger.error(
-            "Invalid DISCOVERY_FEATURE_NORMALIZATION=%s, fallback to zscore.",
-            raw_value,
+        _log_structured_error(
+            event="config_invalid_discovery_feature_normalization",
+            error_type="ValueError",
+            message=f"Invalid DISCOVERY_FEATURE_NORMALIZATION={raw_value}; fallback to zscore.",
         )
         return "zscore"
 
     def _resolve_feature_weights(self, risk_profile: str) -> dict[str, float]:
         profile = (risk_profile or "medium").strip().lower()
         if profile not in self.RISK_PROFILE_WEIGHTS:
-            logger.error(
-                "Invalid risk profile=%s for discovery weights. Fallback to medium.",
-                risk_profile,
+            _log_structured_error(
+                event="config_invalid_risk_profile",
+                error_type="ValueError",
+                message=f"Invalid risk_profile={risk_profile}; fallback to medium.",
             )
             profile = "medium"
         weights = dict(self.RISK_PROFILE_WEIGHTS[profile])
@@ -476,7 +536,11 @@ class ResearchSessionStore:
             try:
                 weights[key] = float(raw_value)
             except ValueError:
-                logger.error("Invalid %s=%s, keeping weight=%s.", env_name, raw_value, weights[key])
+                _log_structured_error(
+                    event="config_invalid_discovery_weight",
+                    error_type="ValueError",
+                    message=f"Invalid {env_name}={raw_value}; keeping weight={weights[key]}.",
+                )
         return weights
 
     def _normalize_feature_map(self, ranking: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
@@ -564,6 +628,17 @@ class ResearchSessionStore:
                     self._append_log(job, note)
 
             if result is None:
+                _log_structured_error(
+                    event="suggestion_all_candidates_rate_limited",
+                    session_id=job.session_id,
+                    symbol=selected_symbol,
+                    status_code=None,
+                    error_type="RuntimeError",
+                    message=(
+                        "Suggestion model unavailable for all candidate symbols due to rate "
+                        "limiting."
+                    ),
+                )
                 raise RuntimeError(
                     "Suggestion model unavailable for all candidate symbols due to rate limiting."
                 )
@@ -683,6 +758,17 @@ class ResearchSessionStore:
                 len(symbols),
             )
             if not symbols:
+                _log_structured_error(
+                    event="discovery_missing_symbols",
+                    session_id=job.session_id,
+                    symbol=None,
+                    status_code=None,
+                    error_type="ValueError",
+                    message=(
+                        "AUTO_DETECTION_SYMBOL_NUMBER disabled auto mode without manual "
+                        "symbols."
+                    ),
+                )
                 raise ValueError(
                     (
                         "AUTO_DETECTION_SYMBOL_NUMBER disables auto mode. "
@@ -716,11 +802,16 @@ class ResearchSessionStore:
                     success_count += 1
                     ranking.append(analyzed)
                 except TimeoutError:
-                    logger.error(
-                        "Discovery timeout session_id=%s symbol=%s timeout_seconds=%.2f",
-                        job.session_id,
-                        symbol,
-                        worker_timeout_seconds,
+                    _log_structured_error(
+                        event="discovery_worker_timeout",
+                        session_id=job.session_id,
+                        symbol=symbol,
+                        status_code=None,
+                        error_type="TimeoutError",
+                        message=(
+                            "Discovery worker timed out "
+                            f"(timeout_seconds={worker_timeout_seconds:.2f})."
+                        ),
                     )
                     self._append_log(
                         job,
@@ -730,11 +821,13 @@ class ResearchSessionStore:
                         ),
                     )
                 except Exception as exc:
-                    logger.error(
-                        "Discovery worker failed session_id=%s symbol=%s error=%s",
-                        job.session_id,
-                        symbol,
-                        exc,
+                    _log_structured_error(
+                        event="discovery_worker_failed",
+                        session_id=job.session_id,
+                        symbol=symbol,
+                        status_code=None,
+                        error_type=type(exc).__name__,
+                        message="Unexpected discovery worker failure.",
                     )
                     self._append_log(job, f"Skipping {symbol}: unexpected discovery failure.")
 
@@ -772,10 +865,13 @@ class ResearchSessionStore:
             logger.warning(
                 "Research workload discovery produced no ranking session_id=%s", job.session_id
             )
-            logger.error(
-                "Discovery failed session_id=%s reason=no_symbols_available symbols_count=%s",
-                job.session_id,
-                len(symbols),
+            _log_structured_error(
+                event="discovery_no_symbols_available",
+                session_id=job.session_id,
+                symbol=None,
+                status_code=None,
+                error_type="ValueError",
+                message=f"No symbols available from scraping phase (symbols_count={len(symbols)}).",
             )
             raise ValueError("No symbols available from scraping phase.")
 
