@@ -1,6 +1,6 @@
 import json
 
-from django.test import RequestFactory
+from django.test import Client, RequestFactory, override_settings
 
 from trading_bot.bot import views
 
@@ -87,3 +87,27 @@ def test_agent_proposals_view_logs_service_and_count(monkeypatch, caplog):
         "Response agent_proposals_view status=200 service=agent_runtime "
         "session_id=None proposals_count=1"
     ) in caplog.text
+
+
+@override_settings(ALLOWED_HOSTS=["testserver", "localhost"])
+def test_dashboard_sets_csrf_cookie():
+    client = Client(enforce_csrf_checks=True)
+
+    response = client.get('/')
+
+    assert response.status_code == 200
+    assert 'csrftoken' in response.cookies
+
+
+@override_settings(ALLOWED_HOSTS=["testserver", "localhost"])
+def test_agent_start_requires_csrf_and_returns_reason_when_missing():
+    client = Client(enforce_csrf_checks=True)
+
+    response = client.post('/api/agent/start')
+
+    assert response.status_code == 403
+    payload = response.json()
+    assert payload['error'] == 'CSRF validation failed.'
+    assert payload['method'] == 'POST'
+    assert payload['csrf_header_present'] is False
+    assert 'csrf' in payload['reason'].lower()

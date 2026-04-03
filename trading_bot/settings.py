@@ -99,3 +99,5 @@ LOGGING = {
         },
     },
 }
+
+CSRF_FAILURE_VIEW = "trading_bot.bot.views.csrf_failure_view"

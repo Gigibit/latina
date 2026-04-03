@@ -6,6 +6,7 @@ from datetime import date, timedelta
 
 from django.http import JsonResponse
 from django.shortcuts import render
+from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_http_methods
 
 from trading_bot.bot.agent_runtime import agent_runtime, crypto_agent_runtime
@@ -15,6 +16,34 @@ from trading_bot.bot.research_session import research_sessions
 from trading_bot.bot.service import generate_suggestion, get_best_candidates, get_market_monitor
 
 logger = logging.getLogger(__name__)
+
+
+def csrf_failure_view(request, reason=""):
+    csrf_cookie_present = bool(request.COOKIES.get("csrftoken"))
+    csrf_header_present = bool(request.headers.get("X-CSRFToken"))
+    logger.error(
+        "Response csrf_failure_view status=403 path=%s method=%s reason=%s "
+        "csrf_cookie_present=%s csrf_header_present=%s referer=%s origin=%s",
+        request.path,
+        request.method,
+        reason,
+        csrf_cookie_present,
+        csrf_header_present,
+        request.headers.get("Referer", "-"),
+        request.headers.get("Origin", "-"),
+    )
+
+    return JsonResponse(
+        {
+            "error": "CSRF validation failed.",
+            "reason": str(reason),
+            "path": request.path,
+            "method": request.method,
+            "csrf_cookie_present": csrf_cookie_present,
+            "csrf_header_present": csrf_header_present,
+        },
+        status=403,
+    )
 
 
 def _is_env_flag_enabled(name: str, default: bool = True) -> bool:
@@ -62,6 +91,7 @@ def _log_agent_response(
 
 
 @require_GET
+@ensure_csrf_cookie
 def dashboard_view(request):
     auto_detection_symbol_number = _auto_detection_symbol_number()
     return render(
