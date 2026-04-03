@@ -84,7 +84,7 @@ def test_etoro_adapter_uses_public_api_headers(monkeypatch):
 
     adapter.getAccountSummary()
 
-    assert captured["url"] == "https://public-api.etoro.com/api/v1/trading/info/real/portfolio"
+    assert captured["url"] == "https://public-api.etoro.com/api/v1/trading/info/real/pnl"
     assert captured["headers"]["x-api-key"] == "token"
     assert captured["headers"]["x-user-key"] == "user-key"
     assert captured["headers"]["accept"] == "application/json"
@@ -120,7 +120,7 @@ def test_etoro_adapter_uses_env_specific_account_summary_path(monkeypatch):
 
     adapter.getAccountSummary()
 
-    assert captured["url"] == "https://public-api.etoro.com/api/v1/trading/info/demo/portfolio"
+    assert captured["url"] == "https://public-api.etoro.com/api/v1/trading/info/demo/pnl"
 
 
 def test_binance_adapter_includes_http_error_body(monkeypatch):

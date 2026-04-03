@@ -24,6 +24,15 @@ class EtoroAdapter:
         self.base_url = base_url.rstrip("/")
         self.ws_url = (ws_url or "").strip()
         self.user_key = (user_key or "").strip()
+        self._latest_portfolio_info: dict[str, Any] | None = None
+        self.supported_capabilities = {
+            "supportsFeeds": False,
+            "supportsSocialAnalytics": False,
+            "supportsCuratedLists": False,
+            "supportsWatchlists": False,
+            "supportsAgentPortfolios": False,
+            "supportsMarketMonitorStreaming": bool(self.ws_url and self.user_key),
+        }
 
     @staticmethod
     def _normalized_env() -> str:
@@ -118,41 +127,76 @@ class EtoroAdapter:
 
     def getAccountSummary(self) -> dict[str, Any]:
         env_segment = "demo" if self._normalized_env() == "DEMO" else "real"
-        return self._request("GET", f"/trading/info/{env_segment}/portfolio")
+        payload = self._request("GET", f"/trading/info/{env_segment}/pnl")
+        portfolio = payload.get("clientPortfolio", payload) if isinstance(payload, dict) else {}
+        self._latest_portfolio_info = portfolio if isinstance(portfolio, dict) else {}
+        return self._latest_portfolio_info
+
+    def _portfolio_info(self) -> dict[str, Any]:
+        if self._latest_portfolio_info is None:
+            return self.getAccountSummary()
+        return self._latest_portfolio_info
 
     def getPositions(self) -> list[dict[str, Any]]:
-        payload = self._request("GET", "/positions")
-        return payload.get("positions", payload if isinstance(payload, list) else [])
+        portfolio = self._portfolio_info()
+        positions = portfolio.get("positions", [])
+        return positions if isinstance(positions, list) else []
 
     def getOpenOrders(self) -> list[dict[str, Any]]:
-        payload = self._request("GET", "/orders/open")
-        return payload.get("orders", payload if isinstance(payload, list) else [])
+        portfolio = self._portfolio_info()
+        orders = portfolio.get("orders", [])
+        return orders if isinstance(orders, list) else []
 
     def getPortfolioHistory(self) -> list[dict[str, Any]]:
-        payload = self._request("GET", "/portfolio/history")
-        return payload.get("history", payload if isinstance(payload, list) else [])
+        portfolio = self._portfolio_info()
+        history = portfolio.get("portfolioHistory", [])
+        return history if isinstance(history, list) else []
 
     def getWatchlists(self) -> list[dict[str, Any]]:
-        payload = self._request("GET", "/watchlists")
-        return payload.get("watchlists", payload if isinstance(payload, list) else [])
+        logger.error(
+            "eToro watchlists fetch skipped: endpoint not enabled because only documented and "
+            "explicitly implemented routes are allowed."
+        )
+        return []
 
     def getCuratedLists(self) -> list[dict[str, Any]]:
-        payload = self._request("GET", "/lists/curated")
-        return payload.get("lists", payload if isinstance(payload, list) else [])
+        logger.error(
+            "eToro curated lists fetch skipped: endpoint not enabled because only documented and "
+            "explicitly implemented routes are allowed."
+        )
+        return []
 
     def getInstrumentFeedPosts(self, *, symbol: str, limit: int = 25) -> list[dict[str, Any]]:
-        payload = self._request("GET", f"/feeds/instruments/{symbol}?limit={limit}")
-        return payload.get("posts", payload if isinstance(payload, list) else [])
+        logger.error(
+            "eToro instrument feed fetch skipped symbol=%s limit=%s: endpoint not enabled because "
+            "only documented and explicitly implemented routes are allowed.",
+            symbol,
+            limit,
+        )
+        return []
 
     def getUserFeedPosts(self, *, limit: int = 25) -> list[dict[str, Any]]:
-        payload = self._request("GET", f"/feeds/users/me?limit={limit}")
-        return payload.get("posts", payload if isinstance(payload, list) else [])
+        logger.error(
+            "eToro user feed fetch skipped limit=%s: endpoint not enabled because only documented "
+            "and explicitly implemented routes are allowed.",
+            limit,
+        )
+        return []
 
     def getSocialAnalytics(self, *, symbol: str) -> dict[str, Any]:
-        return self._request("GET", f"/social/analytics/{symbol}")
+        logger.error(
+            "eToro social analytics fetch skipped symbol=%s: endpoint not enabled because only "
+            "documented and explicitly implemented routes are allowed.",
+            symbol,
+        )
+        return {}
 
     def getAgentPortfolioCompatibility(self) -> dict[str, Any]:
-        return self._request("GET", "/agent-portfolios/compatibility")
+        logger.error(
+            "eToro agent portfolio compatibility fetch skipped: endpoint not enabled because only "
+            "documented and explicitly implemented routes are allowed."
+        )
+        return {}
 
     def authenticateWebsocket(self) -> dict[str, Any]:
         if not self.ws_url:
@@ -228,32 +272,40 @@ class EtoroAdapter:
         side: str,
         size: float,
     ) -> dict[str, Any]:
+        env_segment = "demo" if self._normalized_env() == "DEMO" else "real"
+        instrument_id = os.getenv("ETORO_INSTRUMENT_ID", "").strip()
+        if not instrument_id:
+            message = "eToro placeOrder failed: ETORO_INSTRUMENT_ID is missing"
+            logger.error(message)
+            raise RuntimeError(message)
         return self._request(
             "POST",
-            "/orders",
+            f"/trading/execution/{env_segment}/market-open-orders/by-amount",
             {
-                "approvedProposalId": approvedProposalId,
-                "approvalTimestamp": approvalTimestamp,
-                "snapshotHash": snapshotHash,
-                "symbol": symbol,
-                "side": side,
-                "size": size,
+                "InstrumentID": int(instrument_id),
+                "IsBuy": side.upper() == "BUY",
+                "Leverage": int(os.getenv("ETORO_LEVERAGE", "1")),
+                "Amount": float(size),
+                "CID": int(os.getenv("ETORO_CID", "0")),
             },
         )
 
     def closePosition(
         self, *, approvedProposalId: str, approvalTimestamp: str, snapshotHash: str, symbol: str
     ) -> dict[str, Any]:
-        return self._request(
-            "POST",
-            "/positions/close",
-            {
-                "approvedProposalId": approvedProposalId,
-                "approvalTimestamp": approvalTimestamp,
-                "snapshotHash": snapshotHash,
-                "symbol": symbol,
-            },
+        message = (
+            "eToro closePosition is not executed: only documented API routes are enabled "
+            "and this operation is currently unsupported in this app."
         )
+        logger.error(
+            "%s symbol=%s approvedProposalId=%s approvalTimestamp=%s snapshotHash=%s",
+            message,
+            symbol,
+            approvedProposalId,
+            approvalTimestamp,
+            snapshotHash,
+        )
+        return {"status": "unsupported", "reason": message}
 
     def reducePosition(
         self,
@@ -264,17 +316,20 @@ class EtoroAdapter:
         symbol: str,
         size: float,
     ) -> dict[str, Any]:
-        return self._request(
-            "POST",
-            "/positions/reduce",
-            {
-                "approvedProposalId": approvedProposalId,
-                "approvalTimestamp": approvalTimestamp,
-                "snapshotHash": snapshotHash,
-                "symbol": symbol,
-                "size": size,
-            },
+        message = (
+            "eToro reducePosition is not executed: only documented API routes are enabled "
+            "and this operation is currently unsupported in this app."
         )
+        logger.error(
+            "%s symbol=%s size=%s approvedProposalId=%s approvalTimestamp=%s snapshotHash=%s",
+            message,
+            symbol,
+            size,
+            approvedProposalId,
+            approvalTimestamp,
+            snapshotHash,
+        )
+        return {"status": "unsupported", "reason": message}
 
     def cancelOrderIfSupported(
         self,
@@ -284,16 +339,19 @@ class EtoroAdapter:
         snapshotHash: str,
         orderId: str,
     ) -> dict[str, Any]:
-        return self._request(
-            "POST",
-            "/orders/cancel",
-            {
-                "approvedProposalId": approvedProposalId,
-                "approvalTimestamp": approvalTimestamp,
-                "snapshotHash": snapshotHash,
-                "orderId": orderId,
-            },
+        message = (
+            "eToro cancelOrderIfSupported is not executed: only documented API routes are enabled "
+            "and this operation is currently unsupported in this app."
         )
+        logger.error(
+            "%s orderId=%s approvedProposalId=%s approvalTimestamp=%s snapshotHash=%s",
+            message,
+            orderId,
+            approvedProposalId,
+            approvalTimestamp,
+            snapshotHash,
+        )
+        return {"status": "unsupported", "reason": message}
 
 
 def build_etoro_adapter() -> EtoroAdapter:
