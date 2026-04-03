@@ -44,6 +44,7 @@ class EtoroAdapter:
         body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload = None if body is None else json.dumps(body).encode("utf-8")
+        request_body = payload.decode("utf-8") if payload is not None else "<empty>"
         endpoint = f"{self.base_url}{path}"
         headers = {
             "Content-Type": "application/json",
@@ -90,8 +91,11 @@ class EtoroAdapter:
                 f"reason={exc.reason} body={error_body or '<empty>'}"
             )
             logger.error(
-                "%s response_headers=%s response_json=%s response_body_preview=%s",
+                "%s request_headers=%s request_body=%s "
+                "response_headers=%s response_json=%s response_body_preview=%s",
                 message,
+                headers,
+                request_body,
                 response_headers or {},
                 error_json,
                 body_preview or "<empty>",
@@ -102,7 +106,12 @@ class EtoroAdapter:
                 "eToro API request failed "
                 f"method={method} url={endpoint} reason={exc.reason}"
             )
-            logger.error(message)
+            logger.error(
+                "%s request_headers=%s request_body=%s",
+                message,
+                headers,
+                request_body,
+            )
             raise RuntimeError(message) from exc
 
     def getAccountSummary(self) -> dict[str, Any]:

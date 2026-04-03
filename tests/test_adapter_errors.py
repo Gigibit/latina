@@ -32,6 +32,30 @@ def test_etoro_adapter_includes_http_error_body(monkeypatch):
     assert "token expired" in message
 
 
+def test_etoro_adapter_logs_request_headers_and_body_on_http_error(monkeypatch, caplog):
+    def raise_http_error(request, timeout):
+        raise HTTPError(
+            url=request.full_url,
+            code=403,
+            msg="Forbidden",
+            hdrs=None,
+            fp=BytesIO(b"error code: 1010"),
+        )
+
+    monkeypatch.setattr("trading_bot.bot.etoro_adapter.urlopen", raise_http_error)
+    adapter = EtoroAdapter(api_key="token", base_url="https://api.etoro.test", user_key="user-key")
+
+    with caplog.at_level("ERROR"):
+        with pytest.raises(RuntimeError):
+            adapter.getAccountSummary()
+
+    log_text = caplog.text
+    assert "request_headers=" in log_text
+    assert "request_body=<empty>" in log_text
+    assert "'x-api-key': 'token'" in log_text
+    assert "'x-user-key': 'user-key'" in log_text
+
+
 def test_etoro_adapter_uses_public_api_headers(monkeypatch):
     captured = {}
 
