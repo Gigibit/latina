@@ -66,10 +66,46 @@ class CryptoTicker:
 
 def fetch_trending_symbols(region: str = "US", limit: int = 10) -> list[str]:
     requested_count = _get_env_int("TRENDING_CANDIDATES_SEARCH_NUMBER", default=max(limit, 1))
-    api_url = (
-        f"https://query1.finance.yahoo.com/v1/finance/trending/{region.upper()}"
-        f"?count={requested_count}"
+    provider = _get_trending_provider()
+    logger.info(
+        "Trending symbols provider selected provider=%s requested_count=%s",
+        provider,
+        requested_count,
     )
+    return get_trending_tickers(
+        provider=provider,
+        count=requested_count,
+        region=region,
+        limit=limit,
+    )
+
+
+def get_trending_tickers(
+    provider: str,
+    count: int,
+    region: str = "US",
+    limit: int = 10,
+) -> list[str]:
+    normalized_provider = provider.strip().upper()
+    if normalized_provider == "YFINANCE":
+        return get_trending_tickers_from_yahoo_finance(region=region, count=count, limit=limit)
+    if normalized_provider == "ETORO":
+        return get_trending_tickers_from_etoro(count=count, limit=limit)
+    message = (
+        "MARKET_TRENDING_TICKERS_PROVIDER must be one of: YFINANCE, ETORO "
+        f"(got: {normalized_provider or '<empty>'})"
+    )
+    logger.error(message)
+    raise ValueError(message)
+
+
+def get_trending_tickers_from_yahoo_finance(
+    *,
+    region: str = "US",
+    count: int,
+    limit: int = 10,
+) -> list[str]:
+    api_url = f"https://query1.finance.yahoo.com/v1/finance/trending/{region.upper()}?count={count}"
     request = Request(api_url, headers={"User-Agent": "Mozilla/5.0"})
     retry_enabled = _is_env_flag_enabled("RETRY_BACKOFFF_ENABLED", default=True)
     max_attempts = 3 if retry_enabled else 1
@@ -106,15 +142,25 @@ def fetch_trending_symbols(region: str = "US", limit: int = 10) -> list[str]:
             if should_retry:
                 _sleep_with_exponential_backoff(attempt)
                 continue
+            logger.error(
+                "Unable to fetch trending symbols from Yahoo Finance status=%s url=%s",
+                exc.code,
+                api_url,
+            )
             raise RuntimeError("Unable to fetch trending symbols from Yahoo Finance.") from exc
         except (URLError, TimeoutError) as exc:
-            logger.warning(
-                "External response service=yahoo_finance endpoint=trending_symbols error=%s",
+            logger.error(
+                "Unable to fetch trending symbols from Yahoo Finance url=%s error=%s",
+                api_url,
                 exc,
             )
             raise RuntimeError("Unable to fetch trending symbols from Yahoo Finance.") from exc
 
     if payload is None:
+        logger.error(
+            "Unable to fetch trending symbols from Yahoo Finance: empty payload url=%s",
+            api_url,
+        )
         raise RuntimeError("Unable to fetch trending symbols from Yahoo Finance.")
 
     finance = payload.get("finance")
@@ -128,9 +174,157 @@ def fetch_trending_symbols(region: str = "US", limit: int = 10) -> list[str]:
             symbols.append(symbol)
 
     if not symbols:
+        logger.error(
+            "Yahoo Finance returned no trending symbols region=%s count=%s",
+            region.upper(),
+            count,
+        )
         raise RuntimeError("Yahoo Finance returned no trending symbols.")
 
     return symbols[: max(limit, 1)]
+
+
+def get_trending_tickers_from_etoro(*, count: int, limit: int = 10) -> list[str]:
+    api_key = os.getenv("ETORO_API_KEY", "").strip()
+    user_key = os.getenv("ETORO_USER_KEY", "").strip()
+    if not api_key or not user_key:
+        message = (
+            "Unable to fetch trending symbols from eToro: "
+            "ETORO_API_KEY and ETORO_USER_KEY are required "
+            "when MARKET_TRENDING_TICKERS_PROVIDER=ETORO."
+        )
+        logger.error(message)
+        raise RuntimeError(message)
+
+    api_url = f"https://public-api.etoro.com/api/v1/market-recommendations/{count}"
+    request = Request(
+        api_url,
+        headers={
+            "Accept": "application/json",
+            "x-request-id": os.getenv("ETORO_REQUEST_ID", str(time.time_ns())),
+            "x-api-key": api_key,
+            "x-user-key": user_key,
+            "User-Agent": "Mozilla/5.0",
+        },
+        method="GET",
+    )
+    retry_enabled = _is_env_flag_enabled("RETRY_BACKOFFF_ENABLED", default=True)
+    max_attempts = 3 if retry_enabled else 1
+    payload: object | None = None
+    for attempt in range(1, max_attempts + 1):
+        logger.info(
+            "External request service=etoro endpoint=market_recommendations provider=ETORO "
+            "count=%s attempt=%s/%s",
+            count,
+            attempt,
+            max_attempts,
+        )
+        try:
+            with urlopen(request, timeout=8) as response:
+                raw_payload = response.read().decode("utf-8")
+                payload = json.loads(raw_payload)
+                logger.info(
+                    "External response service=etoro endpoint=market_recommendations "
+                    "status=%s bytes=%s",
+                    getattr(response, "status", "n/a"),
+                    len(raw_payload),
+                )
+            break
+        except HTTPError as exc:
+            is_rate_limited = exc.code == 429
+            should_retry = retry_enabled and is_rate_limited and attempt < max_attempts
+            logger.warning(
+                "External response service=etoro endpoint=market_recommendations "
+                "status=%s rate_limited=%s retry=%s",
+                exc.code,
+                is_rate_limited,
+                should_retry,
+            )
+            if should_retry:
+                _sleep_with_exponential_backoff(attempt)
+                continue
+            logger.error(
+                "Unable to fetch trending symbols from eToro status=%s url=%s",
+                exc.code,
+                api_url,
+            )
+            raise RuntimeError("Unable to fetch trending symbols from eToro.") from exc
+        except (URLError, TimeoutError) as exc:
+            logger.error(
+                "Unable to fetch trending symbols from eToro url=%s error=%s",
+                api_url,
+                exc,
+            )
+            raise RuntimeError("Unable to fetch trending symbols from eToro.") from exc
+
+    if payload is None:
+        logger.error("Unable to fetch trending symbols from eToro: empty payload url=%s", api_url)
+        raise RuntimeError("Unable to fetch trending symbols from eToro.")
+
+    instrument_ids = _extract_etoro_instrument_ids(payload)
+    logger.info(
+        "eToro trending symbols payload parsed provider=ETORO count=%s instruments_received=%s",
+        count,
+        len(instrument_ids),
+    )
+    if not instrument_ids:
+        logger.error("eToro returned no trending instruments count=%s", count)
+        raise RuntimeError("eToro returned no trending instruments.")
+
+    symbols = _resolve_etoro_instrument_ids_to_symbols(instrument_ids)
+    logger.info(
+        "eToro trending symbols resolved provider=ETORO "
+        "instruments_received=%s symbols_resolved=%s",
+        len(instrument_ids),
+        len(symbols),
+    )
+    if not symbols:
+        logger.error("Unable to resolve any eToro instrumentId to symbol count=%s", count)
+        raise RuntimeError("Unable to resolve eToro instrument IDs into symbols.")
+    return symbols[: max(limit, 1)]
+
+
+def _get_trending_provider() -> str:
+    return os.getenv("MARKET_TRENDING_TICKERS_PROVIDER", "YFINANCE").strip().upper() or "YFINANCE"
+
+
+def _extract_etoro_instrument_ids(payload: object) -> list[int]:
+    recommendations = payload if isinstance(payload, list) else []
+    instrument_ids: list[int] = []
+    for item in recommendations:
+        if not isinstance(item, dict):
+            continue
+        instrument_id = item.get("instrumentId")
+        if isinstance(instrument_id, int) and instrument_id not in instrument_ids:
+            instrument_ids.append(instrument_id)
+    return instrument_ids
+
+
+def _resolve_etoro_instrument_ids_to_symbols(instrument_ids: list[int]) -> list[str]:
+    raw_map = os.getenv("ETORO_INSTRUMENT_ID_SYMBOL_MAP", "").strip()
+    configured_map: dict[str, str] = {}
+    if raw_map:
+        try:
+            parsed = json.loads(raw_map)
+            configured_map = parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            logger.error(
+                "Invalid ETORO_INSTRUMENT_ID_SYMBOL_MAP value: expected JSON object."
+            )
+    symbols: list[str] = []
+    unresolved_ids: list[int] = []
+    for instrument_id in instrument_ids:
+        symbol = configured_map.get(str(instrument_id), "").strip().upper()
+        if symbol:
+            symbols.append(symbol)
+        else:
+            unresolved_ids.append(instrument_id)
+    if unresolved_ids:
+        logger.warning(
+            "eToro trending symbols partial mapping unresolved_instrument_ids=%s",
+            unresolved_ids,
+        )
+    return symbols
 
 
 def _is_env_flag_enabled(name: str, default: bool = True) -> bool:

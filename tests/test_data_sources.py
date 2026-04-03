@@ -65,6 +65,82 @@ def test_fetch_trending_symbols_uses_env_count_in_url(monkeypatch):
     assert captured["url"].endswith("/US?count=15")
 
 
+def test_fetch_trending_symbols_uses_yfinance_provider_by_default(monkeypatch):
+    captured = {"url": ""}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        return _DummyResponse({"finance": {"result": [{"quotes": [{"symbol": "AAPL"}]}]}})
+
+    monkeypatch.delenv("MARKET_TRENDING_TICKERS_PROVIDER", raising=False)
+    monkeypatch.setenv("TRENDING_CANDIDATES_SEARCH_NUMBER", "9")
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    symbols = data_sources.fetch_trending_symbols(region="us", limit=2)
+
+    assert symbols == ["AAPL"]
+    assert captured["url"] == "https://query1.finance.yahoo.com/v1/finance/trending/US?count=9"
+
+
+def test_fetch_trending_symbols_uses_etoro_provider(monkeypatch):
+    captured = {"url": "", "headers": {}}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["headers"] = dict(request.header_items())
+        return _DummyResponse(
+            [
+                {"instrumentId": 1},
+                {"instrumentId": 2},
+                {"instrumentId": 2},
+            ]
+        )
+
+    monkeypatch.setenv("MARKET_TRENDING_TICKERS_PROVIDER", "ETORO")
+    monkeypatch.setenv("ETORO_API_KEY", "api-key")
+    monkeypatch.setenv("ETORO_USER_KEY", "user-key")
+    monkeypatch.setenv("ETORO_INSTRUMENT_ID_SYMBOL_MAP", '{"1":"AAPL","2":"MSFT"}')
+    monkeypatch.setenv("TRENDING_CANDIDATES_SEARCH_NUMBER", "5")
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    symbols = data_sources.fetch_trending_symbols(region="US", limit=10)
+
+    assert symbols == ["AAPL", "MSFT"]
+    assert captured["url"].endswith("/market-recommendations/5")
+    assert captured["headers"]["X-api-key"] == "api-key"
+    assert captured["headers"]["X-user-key"] == "user-key"
+    assert "X-request-id" in captured["headers"]
+
+
+def test_fetch_trending_symbols_etoro_requires_keys(monkeypatch):
+    monkeypatch.setenv("MARKET_TRENDING_TICKERS_PROVIDER", "ETORO")
+    monkeypatch.delenv("ETORO_API_KEY", raising=False)
+    monkeypatch.delenv("ETORO_USER_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="ETORO_API_KEY and ETORO_USER_KEY are required"):
+        data_sources.fetch_trending_symbols(limit=2)
+
+
+def test_fetch_trending_symbols_etoro_raises_when_mapping_empty(monkeypatch):
+    def fake_urlopen(request, timeout):
+        return _DummyResponse([{"instrumentId": 1001}])
+
+    monkeypatch.setenv("MARKET_TRENDING_TICKERS_PROVIDER", "ETORO")
+    monkeypatch.setenv("ETORO_API_KEY", "api-key")
+    monkeypatch.setenv("ETORO_USER_KEY", "user-key")
+    monkeypatch.delenv("ETORO_INSTRUMENT_ID_SYMBOL_MAP", raising=False)
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError, match="Unable to resolve eToro instrument IDs into symbols"):
+        data_sources.fetch_trending_symbols(limit=2)
+
+
+def test_fetch_trending_symbols_invalid_provider(monkeypatch):
+    monkeypatch.setenv("MARKET_TRENDING_TICKERS_PROVIDER", "UNKNOWN")
+    with pytest.raises(ValueError, match="MARKET_TRENDING_TICKERS_PROVIDER must be one of"):
+        data_sources.fetch_trending_symbols(limit=1)
+
+
 def test_fetch_trending_symbols_falls_back_to_limit_when_env_count_invalid(monkeypatch):
     captured = {"url": ""}
 
