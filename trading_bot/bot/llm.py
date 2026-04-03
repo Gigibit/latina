@@ -60,6 +60,14 @@ Rules:
 logger = logging.getLogger(__name__)
 
 
+def is_openai_client_available() -> bool:
+    try:
+        from openai import OpenAI  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def _truncate_for_log(value: str, max_chars: int = 700) -> str:
     if len(value) <= max_chars:
         return value
@@ -138,12 +146,11 @@ class LLMDecider:
         if self.provider == "openai":
             if not self.api_key:
                 raise ValueError("OPENAI_API_KEY is missing.")
-            try:
-                from openai import OpenAI
-            except ImportError as exc:
+            if not is_openai_client_available():
                 raise RuntimeError(
                     "openai is not installed. Install dependencies from requirements.txt"
-                ) from exc
+                )
+            from openai import OpenAI
             client = OpenAI(api_key=self.api_key)
             request_payload = {
                 "model": self.model,
@@ -222,12 +229,11 @@ class LLMDecider:
         if self.provider == "openai":
             if not self.api_key:
                 raise ValueError("OPENAI_API_KEY is missing.")
-            try:
-                from openai import OpenAI
-            except ImportError as exc:
+            if not is_openai_client_available():
                 raise RuntimeError(
                     "openai is not installed. Install dependencies from requirements.txt"
-                ) from exc
+                )
+            from openai import OpenAI
             client = OpenAI(api_key=self.api_key)
             request_payload = {
                 "model": self.model,
@@ -307,12 +313,11 @@ class LLMDecider:
         if self.provider == "openai":
             if not self.api_key:
                 raise ValueError("OPENAI_API_KEY is missing.")
-            try:
-                from openai import OpenAI
-            except ImportError as exc:
+            if not is_openai_client_available():
                 raise RuntimeError(
                     "openai is not installed. Install dependencies from requirements.txt"
-                ) from exc
+                )
+            from openai import OpenAI
             client = OpenAI(api_key=self.api_key)
             request_payload = {
                 "model": self.model,
@@ -361,12 +366,11 @@ class LLMDecider:
         if self.provider == "openai":
             if not self.api_key:
                 raise ValueError("OPENAI_API_KEY is missing.")
-            try:
-                from openai import OpenAI
-            except ImportError as exc:
+            if not is_openai_client_available():
                 raise RuntimeError(
                     "openai is not installed. Install dependencies from requirements.txt"
-                ) from exc
+                )
+            from openai import OpenAI
             client = OpenAI(api_key=self.api_key)
             request_payload = {
                 "model": self.model,

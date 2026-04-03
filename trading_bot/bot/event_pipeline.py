@@ -14,7 +14,7 @@ from typing import Any, Callable
 
 from django.utils import timezone
 
-from trading_bot.bot.llm import LLMDecider
+from trading_bot.bot.llm import LLMDecider, is_openai_client_available
 
 logger = logging.getLogger(__name__)
 
@@ -178,8 +178,22 @@ class FeatureSnapshotBuilder:
 
 
 class LLMReasoningEngine:
-    def __init__(self, api_key: str, model: str = "gpt-4o-mini") -> None:
-        self._decider = LLMDecider(provider="openai", model=model, api_key=api_key)
+    def __init__(self, api_key: str | None, model: str = "gpt-4o-mini") -> None:
+        self._enabled = bool(api_key) and is_openai_client_available()
+        self._disabled_reason = ""
+        if self._enabled:
+            self._decider = LLMDecider(provider="openai", model=model, api_key=api_key)
+        else:
+            self._decider = None
+            self._disabled_reason = (
+                "OPENAI_API_KEY is missing."
+                if not api_key
+                else "openai package is not installed."
+            )
+            logger.error(
+                "llm_reasoner disabled reason=%s fallback=neutral_decisions",
+                self._disabled_reason,
+            )
         self._cache: dict[str, dict[str, Any]] = {}
         self._cooldown_by_symbol: dict[str, float] = {}
         self._cooldown_s = float(os.getenv("LLM_SYMBOL_COOLDOWN_SEC", "4"))
@@ -193,6 +207,14 @@ class LLMReasoningEngine:
         prior: dict[str, Any] | None = None,
         force: bool = False,
     ) -> dict[str, Any]:
+        if not self._enabled:
+            logger.error(
+                "llm_reasoner unavailable symbol=%s reason=%s",
+                symbol,
+                self._disabled_reason,
+            )
+            return self._neutral("llm_unavailable")
+
         s_hash = FeatureSnapshotBuilder.snapshot_hash(snapshot)
         if s_hash in self._cache:
             return self._cache[s_hash]
