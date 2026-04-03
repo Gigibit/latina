@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
@@ -21,8 +22,9 @@ class EtoroAdapter:
         body: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload = None if body is None else json.dumps(body).encode("utf-8")
+        endpoint = f"{self.base_url}{path}"
         request = Request(
-            f"{self.base_url}{path}",
+            endpoint,
             data=payload,
             method=method,
             headers={
@@ -30,9 +32,26 @@ class EtoroAdapter:
                 "Content-Type": "application/json",
             },
         )
-        with urlopen(request, timeout=15) as response:
-            raw = response.read().decode("utf-8")
-            return json.loads(raw) if raw else {}
+        try:
+            with urlopen(request, timeout=15) as response:
+                raw = response.read().decode("utf-8")
+                return json.loads(raw) if raw else {}
+        except HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace").strip()
+            message = (
+                "eToro API request failed "
+                f"status={exc.code} method={method} url={endpoint} "
+                f"reason={exc.reason} body={error_body or '<empty>'}"
+            )
+            logger.error(message)
+            raise RuntimeError(message) from exc
+        except URLError as exc:
+            message = (
+                "eToro API request failed "
+                f"method={method} url={endpoint} reason={exc.reason}"
+            )
+            logger.error(message)
+            raise RuntimeError(message) from exc
 
     def getAccountSummary(self) -> dict[str, Any]:
         return self._request("GET", "/account/summary")
