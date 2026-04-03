@@ -48,8 +48,10 @@ class EtoroAdapter:
         endpoint = f"{self.base_url}{path}"
         headers = {
             "Content-Type": "application/json",
+            "Accept": "application/json",
             "x-api-key": self.api_key,
             "x-request-id": str(uuid.uuid4()),
+            "User-Agent": "curl/8.7.1",
         }
         if self.user_key:
             headers["x-user-key"] = self.user_key

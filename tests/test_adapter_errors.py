@@ -87,6 +87,8 @@ def test_etoro_adapter_uses_public_api_headers(monkeypatch):
     assert captured["url"] == "https://public-api.etoro.com/api/v1/trading/info/real/portfolio"
     assert captured["headers"]["x-api-key"] == "token"
     assert captured["headers"]["x-user-key"] == "user-key"
+    assert captured["headers"]["accept"] == "application/json"
+    assert captured["headers"]["user-agent"] == "curl/8.7.1"
     assert "x-request-id" in captured["headers"]
     assert captured["timeout"] == 15
 
