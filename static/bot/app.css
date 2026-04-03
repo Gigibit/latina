@@ -25,6 +25,18 @@ body {
 .top-bar h1 { margin: 0; }
 .top-bar p { margin-top: .25rem; color: var(--muted); }
 
+.brand {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+}
+
+.app-logo {
+  width: 2rem;
+  height: 2rem;
+  flex: 0 0 auto;
+}
+
 .section { display: none; }
 .section.is-active { display: block; }
 
