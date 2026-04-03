@@ -203,13 +203,34 @@ class AgentRuntime:
         capabilities: dict[str, bool],
     ) -> str:
         ranked_symbols: list[str] = []
+        logger.info(
+            "analysis symbol selection start supportsWatchlists=%s supportsCuratedLists=%s "
+            "positions_count=%s adapter=%s",
+            capabilities.get("supportsWatchlists"),
+            capabilities.get("supportsCuratedLists"),
+            len(positions),
+            type(adapter).__name__ if adapter else "None",
+        )
         if capabilities.get("supportsWatchlists"):
             try:
                 watchlists = adapter.getWatchlists()
             except Exception as exc:
                 logger.error("watchlist selection failed error=%s", exc)
             else:
-                ranked_symbols.extend(self._extract_symbols_from_lists(watchlists))
+                watchlist_symbols = self._extract_symbols_from_lists(watchlists)
+                ranked_symbols.extend(watchlist_symbols)
+                logger.info(
+                    "analysis symbol selection watchlists fetched "
+                    "watchlists_count=%s symbols_count=%s symbols=%s",
+                    len(watchlists),
+                    len(watchlist_symbols),
+                    watchlist_symbols,
+                )
+        else:
+            logger.error(
+                "analysis symbol selection watchlists skipped reason=unsupported capability=%s",
+                capabilities.get("supportsWatchlists"),
+            )
 
         if capabilities.get("supportsCuratedLists"):
             try:
@@ -217,12 +238,31 @@ class AgentRuntime:
             except Exception as exc:
                 logger.error("curated selection failed error=%s", exc)
             else:
-                ranked_symbols.extend(self._extract_symbols_from_lists(curated_lists))
+                curated_symbols = self._extract_symbols_from_lists(curated_lists)
+                ranked_symbols.extend(curated_symbols)
+                logger.info(
+                    "analysis symbol selection curated fetched "
+                    "curated_count=%s symbols_count=%s symbols=%s",
+                    len(curated_lists),
+                    len(curated_symbols),
+                    curated_symbols,
+                )
+        else:
+            logger.error(
+                "analysis symbol selection curated skipped reason=unsupported capability=%s",
+                capabilities.get("supportsCuratedLists"),
+            )
 
-        ranked_symbols.extend(
+        position_symbols = [
             str(item.get("symbol", "")).strip().upper()
             for item in positions
             if str(item.get("symbol", "")).strip()
+        ]
+        ranked_symbols.extend(position_symbols)
+        logger.info(
+            "analysis symbol selection positions symbols_count=%s symbols=%s",
+            len(position_symbols),
+            position_symbols,
         )
 
         try:
@@ -235,9 +275,17 @@ class AgentRuntime:
         except Exception as exc:
             logger.error("trending fallback selection failed error=%s", exc)
         else:
-            ranked_symbols.extend(row["symbol"] for row in universe)
+            trending_symbols = [row["symbol"] for row in universe]
+            ranked_symbols.extend(trending_symbols)
+            logger.info(
+                "analysis symbol selection trending symbols_count=%s symbols=%s",
+                len(trending_symbols),
+                trending_symbols,
+            )
 
         selected_symbol = self._choose_weighted_symbol(ranked_symbols, top_n=5)
+        if not ranked_symbols:
+            logger.error("analysis symbol selection no candidates available; defaulting to SPY")
         logger.info(
             "analysis symbol selection selected=%s candidate_count=%s "
             "candidates=%s used_spy_fallback=%s",

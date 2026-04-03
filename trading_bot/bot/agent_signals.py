@@ -257,6 +257,12 @@ class WatchlistAttentionProvider:
         adapter = context.get("adapter")
         capabilities = context.get("capabilities", {})
         if not capabilities.get("supportsWatchlists"):
+            logger.error(
+                "watchlist provider unavailable symbol=%s supportsWatchlists=%s adapter=%s",
+                symbol,
+                capabilities.get("supportsWatchlists"),
+                type(adapter).__name__ if adapter else "None",
+            )
             return SignalResult(
                 0.5,
                 0.2,
@@ -269,7 +275,12 @@ class WatchlistAttentionProvider:
         try:
             lists = adapter.getWatchlists()
         except Exception as exc:
-            logger.error("watchlist ingestion failed: %s", exc)
+            logger.error(
+                "watchlist ingestion failed symbol=%s adapter=%s error=%s",
+                symbol,
+                type(adapter).__name__ if adapter else "None",
+                exc,
+            )
             return SignalResult(
                 0.5,
                 0.2,
@@ -285,6 +296,13 @@ class WatchlistAttentionProvider:
             entries = watchlist.get("symbols", [])
             total += len(entries)
             symbol_count += sum(1 for item in entries if str(item).upper() == symbol)
+        logger.info(
+            "watchlist provider collected symbol=%s watchlists=%s total_symbols=%s symbol_hits=%s",
+            symbol,
+            len(lists),
+            total,
+            symbol_count,
+        )
         score = max(0.0, min(1.0, 0.5 + (symbol_count / max(total, 1))))
         return SignalResult(
             score=score,
@@ -303,6 +321,12 @@ class CuratedListProvider:
         adapter = context.get("adapter")
         capabilities = context.get("capabilities", {})
         if not capabilities.get("supportsCuratedLists"):
+            logger.error(
+                "curated provider unavailable symbol=%s supportsCuratedLists=%s adapter=%s",
+                symbol,
+                capabilities.get("supportsCuratedLists"),
+                type(adapter).__name__ if adapter else "None",
+            )
             return SignalResult(
                 0.5,
                 0.2,
@@ -314,7 +338,12 @@ class CuratedListProvider:
         try:
             curated = adapter.getCuratedLists()
         except Exception as exc:
-            logger.error("curated list ingestion failed: %s", exc)
+            logger.error(
+                "curated list ingestion failed symbol=%s adapter=%s error=%s",
+                symbol,
+                type(adapter).__name__ if adapter else "None",
+                exc,
+            )
             return SignalResult(0.5, 0.2, 0.0, "Curated fetch failed", {}, ["curated_fetch_failed"])
 
         in_lists = 0
@@ -323,6 +352,13 @@ class CuratedListProvider:
             symbols = entry.get("symbols", [])
             total += len(symbols)
             in_lists += sum(1 for item in symbols if str(item).upper() == symbol)
+        logger.info(
+            "curated provider collected symbol=%s curated_lists=%s total_symbols=%s symbol_hits=%s",
+            symbol,
+            len(curated),
+            total,
+            in_lists,
+        )
         score = max(0.0, min(1.0, 0.5 + (in_lists / max(total, 1))))
         return SignalResult(
             score=score,
