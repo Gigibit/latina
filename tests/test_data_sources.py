@@ -216,8 +216,16 @@ def test_fetch_trending_symbols_etoro_accepts_public_api_watchlist_items(monkeyp
                     {
                         "items": [
                             {"itemId": 1, "itemType": "Instrument"},
-                            {"itemType": "Instrument", "market": {"id": "2"}},
+                            {
+                                "itemType": "Instrument",
+                                "market": {"id": "2", "symbolName": "NVDA"},
+                            },
                             {"itemId": 0, "itemType": "Instrument"},
+                            {
+                                "itemId": 9999,
+                                "itemType": "Portfolio",
+                                "market": {"id": "99", "symbolName": "SHOULD_SKIP"},
+                            },
                             {"itemId": 3, "itemType": "Instrument", "symbolName": "AAPL"},
                             {"itemId": 4, "itemType": "Instrument", "SymbolName": "MSFT"},
                         ]
@@ -233,7 +241,7 @@ def test_fetch_trending_symbols_etoro_accepts_public_api_watchlist_items(monkeyp
 
     symbols = data_sources.fetch_trending_symbols(limit=10)
 
-    assert symbols == ["AAPL", "MSFT"]
+    assert symbols == ["NVDA", "AAPL", "MSFT"]
 
 
 def test_fetch_trending_symbols_invalid_provider(monkeypatch):
