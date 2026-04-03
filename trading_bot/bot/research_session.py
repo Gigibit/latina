@@ -11,6 +11,7 @@ from datetime import date, timedelta
 from typing import Any, Callable
 
 from trading_bot.bot.data_sources import (
+    compute_technical_indicators,
     fetch_trending_symbols,
     fetch_x_sentiment_scores,
     get_market_snapshot,
@@ -49,8 +50,8 @@ def _summarize_result_with_llm(payload: dict[str, Any]) -> str:
         summary = decider.summarize_json(payload)
         if summary:
             return summary
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.error("Failed to summarize result with llm error=%s", exc)
     decision = payload.get("decision", {})
     action = str(decision.get("action", "HOLD"))
     confidence = decision.get("confidence", "n/a")
@@ -122,6 +123,53 @@ class ResearchJob:
 
 
 class ResearchSessionStore:
+    FEATURE_KEYS = (
+        "sentiment",
+        "momentum_5d",
+        "momentum_20d",
+        "volume_stability",
+        "short_drawdown",
+        "tech_trend",
+        "tech_rsi",
+        "tech_macd",
+        "tech_bollinger",
+    )
+    RISK_PROFILE_WEIGHTS: dict[str, dict[str, float]] = {
+        "low": {
+            "sentiment": 0.8,
+            "momentum_5d": 0.4,
+            "momentum_20d": 1.2,
+            "volume_stability": 1.1,
+            "short_drawdown": 1.3,
+            "tech_trend": 1.0,
+            "tech_rsi": 1.0,
+            "tech_macd": 0.8,
+            "tech_bollinger": 0.9,
+        },
+        "medium": {
+            "sentiment": 1.0,
+            "momentum_5d": 0.8,
+            "momentum_20d": 1.0,
+            "volume_stability": 0.9,
+            "short_drawdown": 1.0,
+            "tech_trend": 1.0,
+            "tech_rsi": 0.9,
+            "tech_macd": 1.0,
+            "tech_bollinger": 0.9,
+        },
+        "high": {
+            "sentiment": 1.2,
+            "momentum_5d": 1.3,
+            "momentum_20d": 0.9,
+            "volume_stability": 0.6,
+            "short_drawdown": 0.5,
+            "tech_trend": 1.1,
+            "tech_rsi": 0.7,
+            "tech_macd": 1.2,
+            "tech_bollinger": 0.8,
+        },
+    }
+
     def __init__(self) -> None:
         self._jobs: dict[str, ResearchJob] = {}
         self._lock = threading.Lock()
@@ -253,11 +301,18 @@ class ResearchSessionStore:
         job: ResearchJob,
         symbol: str,
         last_days: tuple[date, ...],
-    ) -> tuple[dict[str, float | str] | None, float]:
+    ) -> tuple[dict[str, Any] | None, float]:
         started_at = time.perf_counter()
         try:
             snapshot = self._cached_market_snapshot(symbol)
-        except ValueError:
+        except ValueError as exc:
+            logger.error(
+                "Skipping symbol due to insufficient market history "
+                "session_id=%s symbol=%s error=%s",
+                job.session_id,
+                symbol,
+                exc,
+            )
             self._append_log(job, f"Skipping {symbol}: insufficient market history.")
             return None, (time.perf_counter() - started_at) * 1000
         except Exception as exc:
@@ -282,25 +337,163 @@ class ResearchSessionStore:
             self._append_log(job, f"Skipping {symbol}: sentiment source unavailable.")
             return None, (time.perf_counter() - started_at) * 1000
 
+        min_history_days = self._min_history_days()
+        try:
+            technicals = compute_technical_indicators(symbol=symbol, lookback_days=min_history_days)
+        except ValueError as exc:
+            logger.error(
+                "Skipping symbol due to insufficient technical history session_id=%s symbol=%s "
+                "required_history_days=%s error=%s",
+                job.session_id,
+                symbol,
+                min_history_days,
+                exc,
+            )
+            self._append_log(job, f"Skipping {symbol}: insufficient technical history.")
+            return None, (time.perf_counter() - started_at) * 1000
+        except Exception as exc:
+            logger.error(
+                "Technical indicators failed session_id=%s symbol=%s error=%s",
+                job.session_id,
+                symbol,
+                exc,
+            )
+            self._append_log(job, f"Skipping {symbol}: technical indicators unavailable.")
+            return None, (time.perf_counter() - started_at) * 1000
+
+        pct_change_5d = float(getattr(snapshot, "pct_change_5d", 0.0))
+        pct_change_20d = float(getattr(snapshot, "pct_change_20d", pct_change_5d))
+        latest_close = float(getattr(snapshot, "latest_close", 1.0))
         sentiment = sum(sentiment_map.values()) / max(len(sentiment_map), 1)
-        relative_volume = snapshot.latest_volume / max(snapshot.avg_volume_20d, 1)
-        score = snapshot.pct_change_5d + (relative_volume - 1) * 8 + sentiment * 10
+        relative_volume = snapshot.latest_volume / max(snapshot.avg_volume_20d, 1.0)
+        volume_stability = -abs(relative_volume - 1.0)
+        short_drawdown = -max(-pct_change_5d, 0.0)
+        tech_trend = (technicals.sma_20 - technicals.sma_50) / max(abs(technicals.sma_50), 1e-6)
+        tech_rsi = 1.0 - (abs(technicals.rsi_14 - 50.0) / 50.0)
+        tech_macd = technicals.macd - technicals.macd_signal
+        band_width = max(technicals.bollinger_upper - technicals.bollinger_lower, 1e-6)
+        tech_bollinger = (((latest_close - technicals.bollinger_lower) / band_width) * 2.0) - 1.0
+
         analyzed = {
             "symbol": snapshot.symbol,
-            "score": round(score, 4),
-            "sentiment": round(sentiment, 4),
-            "pct_change_5d": round(snapshot.pct_change_5d, 4),
+            "sentiment": round(sentiment, 6),
+            "pct_change_5d": round(pct_change_5d, 4),
+            "pct_change_20d": round(pct_change_20d, 4),
+            "relative_volume": round(relative_volume, 6),
+            "avg_volume_20d": round(snapshot.avg_volume_20d, 2),
+            "liquidity_proxy": round(latest_close * snapshot.avg_volume_20d, 2),
+            "volatility_proxy": round(abs(pct_change_5d), 4),
+            "features": {
+                "sentiment": sentiment,
+                "momentum_5d": pct_change_5d,
+                "momentum_20d": pct_change_20d,
+                "volume_stability": volume_stability,
+                "short_drawdown": short_drawdown,
+                "tech_trend": tech_trend,
+                "tech_rsi": tech_rsi,
+                "tech_macd": tech_macd,
+                "tech_bollinger": tech_bollinger,
+            },
         }
         elapsed_ms = (time.perf_counter() - started_at) * 1000
         self._append_log(
             job,
             (
                 f"Analyzed {snapshot.symbol}: sentiment={sentiment:.3f}, "
-                f"5d_change={snapshot.pct_change_5d:.2f}, score={score:.2f}, "
+                f"5d_change={pct_change_5d:.2f}, "
+                f"20d_change={pct_change_20d:.2f}, "
+                f"volume_stability={volume_stability:.3f}, "
                 f"per_symbol_ms={elapsed_ms:.1f}."
             ),
         )
         return analyzed, elapsed_ms
+
+    @staticmethod
+    def _min_history_days() -> int:
+        raw_value = os.getenv("DISCOVERY_MIN_HISTORY_DAYS", "180").strip()
+        try:
+            return max(int(raw_value), 60)
+        except ValueError:
+            logger.error("Invalid DISCOVERY_MIN_HISTORY_DAYS=%s, fallback to 180.", raw_value)
+            return 180
+
+    @staticmethod
+    def _min_liquidity_proxy() -> float:
+        raw_value = os.getenv("DISCOVERY_MIN_LIQUIDITY_PROXY", "0").strip()
+        try:
+            return max(float(raw_value), 0.0)
+        except ValueError:
+            logger.error(
+                "Invalid DISCOVERY_MIN_LIQUIDITY_PROXY=%s, fallback to 0.",
+                raw_value,
+            )
+            return 0.0
+
+    @staticmethod
+    def _max_volatility_proxy() -> float:
+        raw_value = os.getenv("DISCOVERY_MAX_VOLATILITY_5D_PCT", "12").strip()
+        try:
+            return max(float(raw_value), 0.1)
+        except ValueError:
+            logger.error("Invalid DISCOVERY_MAX_VOLATILITY_5D_PCT=%s, fallback to 12.", raw_value)
+            return 12.0
+
+    @staticmethod
+    def _normalization_mode() -> str:
+        raw_value = os.getenv("DISCOVERY_FEATURE_NORMALIZATION", "zscore").strip().lower()
+        if raw_value in {"zscore", "minmax"}:
+            return raw_value
+        logger.error(
+            "Invalid DISCOVERY_FEATURE_NORMALIZATION=%s, fallback to zscore.",
+            raw_value,
+        )
+        return "zscore"
+
+    def _resolve_feature_weights(self, risk_profile: str) -> dict[str, float]:
+        profile = (risk_profile or "medium").strip().lower()
+        if profile not in self.RISK_PROFILE_WEIGHTS:
+            logger.error(
+                "Invalid risk profile=%s for discovery weights. Fallback to medium.",
+                risk_profile,
+            )
+            profile = "medium"
+        weights = dict(self.RISK_PROFILE_WEIGHTS[profile])
+        for key in self.FEATURE_KEYS:
+            env_name = f"DISCOVERY_WEIGHT_{profile.upper()}_{key.upper()}"
+            raw_value = os.getenv(env_name)
+            if raw_value is None:
+                continue
+            try:
+                weights[key] = float(raw_value)
+            except ValueError:
+                logger.error("Invalid %s=%s, keeping weight=%s.", env_name, raw_value, weights[key])
+        return weights
+
+    def _normalize_feature_map(self, ranking: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+        normalization_mode = self._normalization_mode()
+        normalized: dict[str, dict[str, float]] = {
+            str(row["symbol"]): {} for row in ranking
+        }
+        for key in self.FEATURE_KEYS:
+            values = [float(row["features"][key]) for row in ranking]
+            if normalization_mode == "minmax":
+                min_value = min(values)
+                max_value = max(values)
+                spread = max_value - min_value
+                for row in ranking:
+                    symbol = str(row["symbol"])
+                    current = float(row["features"][key])
+                    normalized[symbol][key] = 0.0 if spread == 0 else (current - min_value) / spread
+                continue
+
+            mean_value = sum(values) / max(len(values), 1)
+            variance = sum((value - mean_value) ** 2 for value in values) / max(len(values), 1)
+            stddev = variance**0.5
+            for row in ranking:
+                symbol = str(row["symbol"])
+                current = float(row["features"][key])
+                normalized[symbol][key] = 0.0 if stddev == 0 else (current - mean_value) / stddev
+        return normalized
 
     def _run_job(self, job: ResearchJob) -> None:
         try:
@@ -443,7 +636,7 @@ class ResearchSessionStore:
             logger.exception("Research workload failed session_id=%s error=%s", job.session_id, exc)
             self._append_log(job, f"Research failed: {exc}")
 
-    def _discover_symbol(self, job: ResearchJob) -> tuple[str, float, list[dict[str, float | str]]]:
+    def _discover_symbol(self, job: ResearchJob) -> tuple[str, float, list[dict[str, Any]]]:
         discovery_started_at = time.perf_counter()
         self._append_log(job, "Scraping trending symbols and sentiment signals from web data.")
         logger.info("Research workload discovery started session_id=%s", job.session_id)
@@ -493,7 +686,7 @@ class ResearchSessionStore:
         worker_timeout_seconds = self._symbol_worker_timeout_seconds()
         max_workers = self._symbol_worker_pool_size(len(symbols))
 
-        ranking: list[dict[str, float | str]] = []
+        ranking: list[dict[str, Any]] = []
         per_symbol_ms: list[float] = []
         success_count = 0
         with ThreadPoolExecutor(
@@ -535,6 +728,36 @@ class ResearchSessionStore:
                     )
                     self._append_log(job, f"Skipping {symbol}: unexpected discovery failure.")
 
+        min_liquidity_proxy = self._min_liquidity_proxy()
+        max_volatility_proxy = self._max_volatility_proxy()
+        filtered_out = 0
+        filtered_ranking: list[dict[str, Any]] = []
+        for row in ranking:
+            liquidity_proxy = float(row["liquidity_proxy"])
+            volatility_proxy = float(row["volatility_proxy"])
+            if liquidity_proxy < min_liquidity_proxy:
+                filtered_out += 1
+                self._append_log(
+                    job,
+                    (
+                        f"Filtered {row['symbol']}: liquidity {liquidity_proxy:.2f} "
+                        f"< min {min_liquidity_proxy:.2f}."
+                    ),
+                )
+                continue
+            if volatility_proxy > max_volatility_proxy:
+                filtered_out += 1
+                self._append_log(
+                    job,
+                    (
+                        f"Filtered {row['symbol']}: volatility {volatility_proxy:.2f}% "
+                        f"> max {max_volatility_proxy:.2f}%."
+                    ),
+                )
+                continue
+            filtered_ranking.append(row)
+        ranking = filtered_ranking
+
         if not ranking:
             logger.warning(
                 "Research workload discovery produced no ranking session_id=%s", job.session_id
@@ -546,6 +769,28 @@ class ResearchSessionStore:
             )
             raise ValueError("No symbols available from scraping phase.")
 
+        normalized_feature_map = self._normalize_feature_map(ranking)
+        weights = self._resolve_feature_weights(job.risk_profile)
+        for row in ranking:
+            symbol = str(row["symbol"])
+            normalized = normalized_feature_map[symbol]
+            score_breakdown: dict[str, float] = {}
+            total_score = 0.0
+            for key in self.FEATURE_KEYS:
+                contribution = normalized[key] * weights[key]
+                score_breakdown[key] = round(contribution, 6)
+                total_score += contribution
+            row["score_breakdown"] = score_breakdown
+            row["feature_values"] = {
+                key: round(float(row["features"][key]), 6) for key in self.FEATURE_KEYS
+            }
+            row["normalized_features"] = {
+                key: round(normalized[key], 6) for key in self.FEATURE_KEYS
+            }
+            row["applied_weights"] = {key: round(weights[key], 6) for key in self.FEATURE_KEYS}
+            row["score"] = round(total_score, 6)
+            del row["features"]
+
         ranking.sort(key=lambda row: float(row["score"]), reverse=True)
         best = ranking[0]
         discovery_ms = (time.perf_counter() - discovery_started_at) * 1000
@@ -553,13 +798,14 @@ class ResearchSessionStore:
         avg_per_symbol_ms = sum(per_symbol_ms) / max(len(per_symbol_ms), 1)
         logger.info(
             "Research workload discovery completed session_id=%s top_symbol=%s top_score=%.4f "
-            "discovery_ms=%.1f per_symbol_ms=%.1f success_ratio=%.2f",
+            "discovery_ms=%.1f per_symbol_ms=%.1f success_ratio=%.2f filtered_out=%s",
             job.session_id,
             best["symbol"],
             float(best["score"]),
             discovery_ms,
             avg_per_symbol_ms,
             success_ratio,
+            filtered_out,
         )
         return str(best["symbol"]), float(best["score"]), ranking
 
