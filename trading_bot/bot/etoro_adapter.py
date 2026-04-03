@@ -25,6 +25,18 @@ class EtoroAdapter:
         self.ws_url = (ws_url or "").strip()
         self.user_key = (user_key or "").strip()
 
+    @staticmethod
+    def _normalized_env() -> str:
+        raw_env = os.getenv("ETORO_ENV", "REAL").strip().upper()
+        if raw_env not in {"REAL", "DEMO"}:
+            message = (
+                "eToro adapter configuration invalid: ETORO_ENV must be REAL or DEMO "
+                f"(got: {raw_env or '<empty>'})"
+            )
+            logger.error(message)
+            raise RuntimeError(message)
+        return raw_env
+
     def _request(
         self,
         method: str,
@@ -68,7 +80,8 @@ class EtoroAdapter:
             raise RuntimeError(message) from exc
 
     def getAccountSummary(self) -> dict[str, Any]:
-        return self._request("GET", "/account/summary")
+        env_segment = "demo" if self._normalized_env() == "DEMO" else "real"
+        return self._request("GET", f"/trading/info/{env_segment}/portfolio")
 
     def getPositions(self) -> list[dict[str, Any]]:
         payload = self._request("GET", "/positions")
@@ -250,6 +263,7 @@ def build_etoro_adapter() -> EtoroAdapter:
     api_key = os.getenv("ETORO_API_KEY")
     base_url = os.getenv("ETORO_API_BASE_URL", "https://public-api.etoro.com/api/v1")
     if not api_key:
+        logger.error("eToro adapter configuration invalid: ETORO_API_KEY is missing")
         raise ValueError("ETORO_API_KEY is missing")
     return EtoroAdapter(
         api_key=api_key,

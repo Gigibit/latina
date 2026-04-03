@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -25,6 +26,18 @@ def _state_file_path() -> Path:
 
 def _http_log_enabled() -> bool:
     return _is_env_flag_enabled("HTTP_LOG_ENABLED", True)
+
+
+def _normalized_etoro_env() -> str:
+    raw_env = os.getenv("ETORO_ENV", "REAL").strip().upper()
+    if raw_env not in {"REAL", "DEMO"}:
+        message = (
+            "Invalid ETORO_ENV value: expected REAL or DEMO "
+            f"(got {raw_env or '<empty>'})"
+        )
+        logger.error(message)
+        raise ValueError(message)
+    return raw_env
 
 
 def _load_state() -> dict:
@@ -106,34 +119,52 @@ def execute_etoro_action(symbol: str, action: str, confidence: int | float | Non
 
     base_url = os.getenv("ETORO_API_BASE_URL", "").rstrip("/")
     api_key = os.getenv("ETORO_API_KEY")
-    if not base_url or not api_key:
+    user_key = os.getenv("ETORO_USER_KEY", "").strip()
+    instrument_id = os.getenv("ETORO_INSTRUMENT_ID", "").strip()
+    if not base_url or not api_key or not user_key or not instrument_id:
         logger.error(
             "eToro execution failed for symbol=%s action=%s: "
-            "missing ETORO_API_BASE_URL or ETORO_API_KEY",
+            "missing one of ETORO_API_BASE_URL, ETORO_API_KEY, ETORO_USER_KEY, ETORO_INSTRUMENT_ID",
             symbol.upper(),
             normalized_action,
         )
         return {
             "status": "error",
-            "reason": "Missing ETORO_API_BASE_URL or ETORO_API_KEY",
+            "reason": (
+                "Missing ETORO_API_BASE_URL, ETORO_API_KEY, ETORO_USER_KEY, "
+                "or ETORO_INSTRUMENT_ID"
+            ),
         }
 
-    endpoint = f"{base_url}/orders"
+    try:
+        etoro_env = _normalized_etoro_env()
+    except ValueError as exc:
+        return {"status": "error", "reason": str(exc)}
+
+    execution_path = (
+        "/trading/execution/demo/market-open-orders/by-amount"
+        if etoro_env == "DEMO"
+        else "/trading/execution/market-open-orders/by-amount"
+    )
+    endpoint = f"{base_url}{execution_path}"
     payload = {
-        "symbol": symbol.upper(),
-        "side": normalized_action,
-        "order_type": "market",
-        "account_id": os.getenv("ETORO_ACCOUNT_ID"),
-        "confidence": confidence,
-        "source": "ai-trading-bot",
+        "InstrumentID": int(instrument_id),
+        "IsBuy": normalized_action == "BUY",
+        "Leverage": int(os.getenv("ETORO_LEVERAGE", "1")),
+        "Amount": float(os.getenv("ETORO_ORDER_AMOUNT_USD", "100")),
+        "CID": int(os.getenv("ETORO_CID", "0")),
     }
+    if confidence is not None and _http_log_enabled():
+        logger.debug("eToro decision confidence=%s for symbol=%s", confidence, symbol.upper())
 
     request = Request(
         endpoint,
         data=json.dumps(payload).encode("utf-8"),
         headers={
-            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "x-user-key": user_key,
+            "x-request-id": str(uuid.uuid4()),
         },
         method="POST",
     )
@@ -152,10 +183,11 @@ def execute_etoro_action(symbol: str, action: str, confidence: int | float | Non
         if error_body and _http_log_enabled():
             logger.debug("eToro error response body: %s", error_body)
         logger.error(
-            "eToro API HTTP error for symbol=%s action=%s: status=%s",
+            "eToro API HTTP error for symbol=%s action=%s: status=%s body=%s",
             symbol.upper(),
             normalized_action,
             exc.code,
+            error_body or "<empty>",
         )
         return {"status": "error", "reason": f"eToro API HTTP error {exc.code}"}
     except URLError as exc:

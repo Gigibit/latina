@@ -201,11 +201,24 @@ class AgentRuntime:
             )
             raise ValueError(message)
 
+        etoro_env = os.getenv("ETORO_ENV", "REAL").strip().upper()
+        if etoro_env not in {"REAL", "DEMO"}:
+            message = "Broker configuration invalid: ETORO_ENV must be REAL or DEMO."
+            logger.error(
+                "broker preflight failed market=%s reason=invalid_etoro_env value=%s",
+                self._market,
+                etoro_env or "<empty>",
+            )
+            raise ValueError(message)
+
         base_path = parsed.path.rstrip("/") or "/"
-        target_path = f"{base_path}/account/summary" if base_path != "/" else "/account/summary"
+        env_segment = "demo" if etoro_env == "DEMO" else "real"
+        target_suffix = f"/trading/info/{env_segment}/portfolio"
+        target_path = f"{base_path}{target_suffix}" if base_path != "/" else target_suffix
         logger.info(
-            "broker preflight target market=%s host=%s base_path=%s target_path=%s",
+            "broker preflight target market=%s env=%s host=%s base_path=%s target_path=%s",
             self._market,
+            etoro_env,
             parsed.netloc,
             base_path,
             target_path,
