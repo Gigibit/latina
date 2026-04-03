@@ -282,10 +282,6 @@ if (playgroundDateInput && !playgroundDateInput.value) {
   playgroundDateInput.value = today.toISOString().slice(0, 10);
 }
 
-startSuggestionResearch('medium');
-document.getElementById('projections-form').requestSubmit();
-playgroundForm.requestSubmit();
-
 const agentSessionOutput = document.getElementById('agent-session-output');
 const agentCapabilitiesOutput = document.getElementById('agent-capabilities-output');
 const agentProviderOutput = document.getElementById('agent-provider-output');
@@ -293,6 +289,7 @@ const agentLogsOutput = document.getElementById('agent-logs-output');
 const agentProposalsContainer = document.getElementById('agent-proposals');
 const agentStartButton = document.getElementById('agent-start');
 const agentStopButton = document.getElementById('agent-stop');
+let agentRefreshIntervalId = null;
 
 function getCookie(name) {
   const cookieString = document.cookie || '';
@@ -400,11 +397,24 @@ async function refreshAgentSection() {
   }
 }
 
+function stopAgentRefreshLoop() {
+  if (agentRefreshIntervalId !== null) {
+    window.clearInterval(agentRefreshIntervalId);
+    agentRefreshIntervalId = null;
+  }
+}
+
+function startAgentRefreshLoop() {
+  stopAgentRefreshLoop();
+  agentRefreshIntervalId = window.setInterval(refreshAgentSection, 4000);
+}
+
 if (agentStartButton) {
   agentStartButton.addEventListener('click', async () => {
     try {
       await postAgent('/api/agent/start');
       await refreshAgentSection();
+      startAgentRefreshLoop();
     } catch (error) {
       agentLogsOutput.textContent = `Error: ${error.message}`;
     }
@@ -415,6 +425,7 @@ if (agentStopButton) {
   agentStopButton.addEventListener('click', async () => {
     try {
       await postAgent('/api/agent/stop');
+      stopAgentRefreshLoop();
       await refreshAgentSection();
     } catch (error) {
       agentLogsOutput.textContent = `Error: ${error.message}`;
@@ -441,14 +452,12 @@ if (agentProposalsContainer) {
   });
 }
 
-window.setInterval(refreshAgentSection, 4000);
-refreshAgentSection();
-
 const cryptoAgentSessionOutput = document.getElementById('crypto-agent-session-output');
 const cryptoAgentLogsOutput = document.getElementById('crypto-agent-logs-output');
 const cryptoAgentProposalsContainer = document.getElementById('crypto-agent-proposals');
 const cryptoAgentStartButton = document.getElementById('crypto-agent-start');
 const cryptoAgentStopButton = document.getElementById('crypto-agent-stop');
+let cryptoAgentRefreshIntervalId = null;
 
 function renderCryptoProposals(proposals) {
   if (!cryptoAgentProposalsContainer) return;
@@ -495,15 +504,29 @@ async function refreshCryptoAgentSection() {
   }
 }
 
+function stopCryptoAgentRefreshLoop() {
+  if (cryptoAgentRefreshIntervalId !== null) {
+    window.clearInterval(cryptoAgentRefreshIntervalId);
+    cryptoAgentRefreshIntervalId = null;
+  }
+}
+
+function startCryptoAgentRefreshLoop() {
+  stopCryptoAgentRefreshLoop();
+  cryptoAgentRefreshIntervalId = window.setInterval(refreshCryptoAgentSection, 4000);
+}
+
 if (cryptoAgentStartButton) {
   cryptoAgentStartButton.addEventListener('click', async () => {
     await postAgent('/api/agent-crypto/start');
     await refreshCryptoAgentSection();
+    startCryptoAgentRefreshLoop();
   });
 }
 if (cryptoAgentStopButton) {
   cryptoAgentStopButton.addEventListener('click', async () => {
     await postAgent('/api/agent-crypto/stop');
+    stopCryptoAgentRefreshLoop();
     await refreshCryptoAgentSection();
   });
 }
@@ -520,6 +543,3 @@ if (cryptoAgentProposalsContainer) {
     await refreshCryptoAgentSection();
   });
 }
-
-window.setInterval(refreshCryptoAgentSection, 4000);
-refreshCryptoAgentSection();
