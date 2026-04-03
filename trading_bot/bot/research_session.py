@@ -5,6 +5,7 @@ import os
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Callable
@@ -124,6 +125,8 @@ class ResearchSessionStore:
     def __init__(self) -> None:
         self._jobs: dict[str, ResearchJob] = {}
         self._lock = threading.Lock()
+        self._cache: dict[str, tuple[float, Any]] = {}
+        self._cache_lock = threading.Lock()
 
     def get_or_create(
         self,
@@ -166,6 +169,138 @@ class ResearchSessionStore:
         if raw_value.lower() in {"false", "off", "no"}:
             return 0
         return max(int(raw_value), 0)
+
+    @staticmethod
+    def _cache_ttl_seconds() -> int:
+        raw_value = os.getenv("DISCOVERY_CACHE_TTL_SECONDS", "60").strip()
+        try:
+            ttl = int(raw_value)
+        except ValueError:
+            logger.error(
+                "Invalid DISCOVERY_CACHE_TTL_SECONDS=%s, fallback to 60 seconds.",
+                raw_value,
+            )
+            return 60
+        return min(max(ttl, 30), 120)
+
+    @staticmethod
+    def _symbol_worker_timeout_seconds() -> float:
+        raw_value = os.getenv("DISCOVERY_SYMBOL_TIMEOUT_SECONDS", "6").strip()
+        try:
+            timeout = float(raw_value)
+        except ValueError:
+            logger.error(
+                "Invalid DISCOVERY_SYMBOL_TIMEOUT_SECONDS=%s, fallback to 6 seconds.",
+                raw_value,
+            )
+            return 6.0
+        return max(timeout, 1.0)
+
+    @staticmethod
+    def _symbol_worker_pool_size(symbol_count: int) -> int:
+        configured = os.getenv("DISCOVERY_WORKER_THREADS", "").strip()
+        if configured:
+            try:
+                return max(min(int(configured), max(symbol_count, 1)), 1)
+            except ValueError:
+                logger.error(
+                    "Invalid DISCOVERY_WORKER_THREADS=%s, using adaptive worker size.",
+                    configured,
+                )
+        return max(min(symbol_count, 8), 1)
+
+    def _cache_get_or_set(self, key: str, loader: Callable[[], Any], ttl_seconds: int) -> Any:
+        now = time.monotonic()
+        with self._cache_lock:
+            cached = self._cache.get(key)
+            if cached and cached[0] > now:
+                return cached[1]
+
+        value = loader()
+        with self._cache_lock:
+            self._cache[key] = (now + ttl_seconds, value)
+        return value
+
+    def _cached_fetch_trending_symbols(self, limit: int) -> list[str]:
+        ttl_seconds = self._cache_ttl_seconds()
+        cache_key = f"trending:{limit}"
+        return self._cache_get_or_set(
+            cache_key,
+            loader=lambda: fetch_trending_symbols(limit=limit),
+            ttl_seconds=ttl_seconds,
+        )
+
+    def _cached_market_snapshot(self, symbol: str) -> Any:
+        ttl_seconds = self._cache_ttl_seconds()
+        cache_key = f"snapshot:{symbol.upper()}"
+        return self._cache_get_or_set(
+            cache_key,
+            loader=lambda: get_market_snapshot(symbol),
+            ttl_seconds=ttl_seconds,
+        )
+
+    def _cached_sentiment_scores(self, symbol: str, days: tuple[date, ...]) -> dict[date, float]:
+        ttl_seconds = self._cache_ttl_seconds()
+        cache_key = f"sentiment:{symbol.upper()}:{','.join(str(day) for day in days)}"
+        return self._cache_get_or_set(
+            cache_key,
+            loader=lambda: fetch_x_sentiment_scores(symbol=symbol, days=list(days)),
+            ttl_seconds=ttl_seconds,
+        )
+
+    def _analyze_symbol(
+        self,
+        job: ResearchJob,
+        symbol: str,
+        last_days: tuple[date, ...],
+    ) -> tuple[dict[str, float | str] | None, float]:
+        started_at = time.perf_counter()
+        try:
+            snapshot = self._cached_market_snapshot(symbol)
+        except ValueError:
+            self._append_log(job, f"Skipping {symbol}: insufficient market history.")
+            return None, (time.perf_counter() - started_at) * 1000
+        except Exception as exc:
+            logger.error(
+                "Market snapshot failed session_id=%s symbol=%s error=%s",
+                job.session_id,
+                symbol,
+                exc,
+            )
+            self._append_log(job, f"Skipping {symbol}: market snapshot unavailable.")
+            return None, (time.perf_counter() - started_at) * 1000
+
+        try:
+            sentiment_map = self._cached_sentiment_scores(symbol=symbol, days=last_days)
+        except Exception as exc:
+            logger.error(
+                "Sentiment fetch failed session_id=%s symbol=%s error=%s",
+                job.session_id,
+                symbol,
+                exc,
+            )
+            self._append_log(job, f"Skipping {symbol}: sentiment source unavailable.")
+            return None, (time.perf_counter() - started_at) * 1000
+
+        sentiment = sum(sentiment_map.values()) / max(len(sentiment_map), 1)
+        relative_volume = snapshot.latest_volume / max(snapshot.avg_volume_20d, 1)
+        score = snapshot.pct_change_5d + (relative_volume - 1) * 8 + sentiment * 10
+        analyzed = {
+            "symbol": snapshot.symbol,
+            "score": round(score, 4),
+            "sentiment": round(sentiment, 4),
+            "pct_change_5d": round(snapshot.pct_change_5d, 4),
+        }
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        self._append_log(
+            job,
+            (
+                f"Analyzed {snapshot.symbol}: sentiment={sentiment:.3f}, "
+                f"5d_change={snapshot.pct_change_5d:.2f}, score={score:.2f}, "
+                f"per_symbol_ms={elapsed_ms:.1f}."
+            ),
+        )
+        return analyzed, elapsed_ms
 
     def _run_job(self, job: ResearchJob) -> None:
         try:
@@ -309,6 +444,7 @@ class ResearchSessionStore:
             self._append_log(job, f"Research failed: {exc}")
 
     def _discover_symbol(self, job: ResearchJob) -> tuple[str, float, list[dict[str, float | str]]]:
+        discovery_started_at = time.perf_counter()
         self._append_log(job, "Scraping trending symbols and sentiment signals from web data.")
         logger.info("Research workload discovery started session_id=%s", job.session_id)
         auto_detection_symbol_number = self._auto_detection_symbol_number()
@@ -323,7 +459,7 @@ class ResearchSessionStore:
             )
             self._append_log(job, "Using symbols provided by user input.")
         elif auto_detection_symbol_number > 0:
-            symbols = fetch_trending_symbols(limit=auto_detection_symbol_number)
+            symbols = self._cached_fetch_trending_symbols(limit=auto_detection_symbol_number)
             logger.info(
                 "Research workload auto-detection symbols fetched session_id=%s count=%s",
                 job.session_id,
@@ -353,49 +489,77 @@ class ResearchSessionStore:
             self._append_log(job, "Auto symbol detection disabled; using symbols from user input.")
 
         today = date.today()
-        last_days = [today - timedelta(days=offset) for offset in range(5)]
+        last_days = tuple(today - timedelta(days=offset) for offset in range(5))
+        worker_timeout_seconds = self._symbol_worker_timeout_seconds()
+        max_workers = self._symbol_worker_pool_size(len(symbols))
 
         ranking: list[dict[str, float | str]] = []
-        for symbol in symbols:
-            try:
-                snapshot = get_market_snapshot(symbol)
-            except ValueError:
-                self._append_log(job, f"Skipping {symbol}: insufficient market history.")
-                continue
-
-            sentiment_map = fetch_x_sentiment_scores(symbol=symbol, days=last_days)
-            sentiment = sum(sentiment_map.values()) / max(len(sentiment_map), 1)
-            relative_volume = snapshot.latest_volume / max(snapshot.avg_volume_20d, 1)
-            score = snapshot.pct_change_5d + (relative_volume - 1) * 8 + sentiment * 10
-            ranking.append(
-                {
-                    "symbol": snapshot.symbol,
-                    "score": round(score, 4),
-                    "sentiment": round(sentiment, 4),
-                    "pct_change_5d": round(snapshot.pct_change_5d, 4),
-                }
-            )
-            self._append_log(
-                job,
-                (
-                    f"Analyzed {snapshot.symbol}: sentiment={sentiment:.3f}, "
-                    f"5d_change={snapshot.pct_change_5d:.2f}, score={score:.2f}."
-                ),
-            )
+        per_symbol_ms: list[float] = []
+        success_count = 0
+        with ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="discovery",
+        ) as executor:
+            futures = {
+                executor.submit(self._analyze_symbol, job, symbol, last_days): symbol
+                for symbol in symbols
+            }
+            for future, symbol in futures.items():
+                try:
+                    analyzed, elapsed_ms = future.result(timeout=worker_timeout_seconds)
+                    per_symbol_ms.append(elapsed_ms)
+                    if analyzed is None:
+                        continue
+                    success_count += 1
+                    ranking.append(analyzed)
+                except TimeoutError:
+                    logger.error(
+                        "Discovery timeout session_id=%s symbol=%s timeout_seconds=%.2f",
+                        job.session_id,
+                        symbol,
+                        worker_timeout_seconds,
+                    )
+                    self._append_log(
+                        job,
+                        (
+                            f"Skipping {symbol}: discovery timed out after "
+                            f"{worker_timeout_seconds:.1f}s."
+                        ),
+                    )
+                except Exception as exc:
+                    logger.error(
+                        "Discovery worker failed session_id=%s symbol=%s error=%s",
+                        job.session_id,
+                        symbol,
+                        exc,
+                    )
+                    self._append_log(job, f"Skipping {symbol}: unexpected discovery failure.")
 
         if not ranking:
             logger.warning(
                 "Research workload discovery produced no ranking session_id=%s", job.session_id
             )
+            logger.error(
+                "Discovery failed session_id=%s reason=no_symbols_available symbols_count=%s",
+                job.session_id,
+                len(symbols),
+            )
             raise ValueError("No symbols available from scraping phase.")
 
         ranking.sort(key=lambda row: float(row["score"]), reverse=True)
         best = ranking[0]
+        discovery_ms = (time.perf_counter() - discovery_started_at) * 1000
+        success_ratio = success_count / max(len(symbols), 1)
+        avg_per_symbol_ms = sum(per_symbol_ms) / max(len(per_symbol_ms), 1)
         logger.info(
-            "Research workload discovery completed session_id=%s top_symbol=%s top_score=%.4f",
+            "Research workload discovery completed session_id=%s top_symbol=%s top_score=%.4f "
+            "discovery_ms=%.1f per_symbol_ms=%.1f success_ratio=%.2f",
             job.session_id,
             best["symbol"],
             float(best["score"]),
+            discovery_ms,
+            avg_per_symbol_ms,
+            success_ratio,
         )
         return str(best["symbol"]), float(best["score"]), ranking
 
