@@ -90,24 +90,24 @@ def test_fetch_trending_symbols_uses_etoro_provider(monkeypatch):
         captured["url"] = request.full_url
         captured["headers"] = dict(request.header_items())
         return _DummyResponse(
-            [
-                {"instrumentId": 1},
-                {"instrumentId": 2},
-                {"instrumentId": 2},
-            ]
+            {
+                "watchlists": [
+                    {"Items": [{"Instrument": 1}, {"Instrument": 2}]},
+                    {"Items": [{"Instrument": 2}]},
+                ]
+            }
         )
 
     monkeypatch.setenv("MARKET_TRENDING_TICKERS_PROVIDER", "ETORO")
     monkeypatch.setenv("ETORO_API_KEY", "api-key")
     monkeypatch.setenv("ETORO_USER_KEY", "user-key")
     monkeypatch.setenv("ETORO_INSTRUMENT_ID_SYMBOL_MAP", '{"1":"AAPL","2":"MSFT"}')
-    monkeypatch.setenv("TRENDING_CANDIDATES_SEARCH_NUMBER", "5")
     monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
 
     symbols = data_sources.fetch_trending_symbols(region="US", limit=10)
 
     assert symbols == ["AAPL", "MSFT"]
-    assert captured["url"].endswith("/market-recommendations/5")
+    assert captured["url"] == "https://public-api.etoro.com/api/v1/watchlists"
     assert captured["headers"]["X-api-key"] == "api-key"
     assert captured["headers"]["X-user-key"] == "user-key"
     assert "X-request-id" in captured["headers"]
@@ -131,13 +131,12 @@ def test_fetch_trending_symbols_etoro_raises_on_422_without_fallback(monkeypatch
     monkeypatch.setenv("ETORO_API_KEY", "api-key")
     monkeypatch.setenv("ETORO_USER_KEY", "user-key")
     monkeypatch.setenv("ETORO_INSTRUMENT_ID_SYMBOL_MAP", '{"1":"AAPL"}')
-    monkeypatch.setenv("TRENDING_CANDIDATES_SEARCH_NUMBER", "5")
     monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
 
     with pytest.raises(RuntimeError, match="Unable to fetch trending symbols from eToro"):
         data_sources.fetch_trending_symbols(region="US", limit=10)
 
-    assert captured_urls == ["https://public-api.etoro.com/api/v1/market-recommendations/5"]
+    assert captured_urls == ["https://public-api.etoro.com/api/v1/watchlists"]
 
 
 def test_fetch_trending_symbols_etoro_requires_keys(monkeypatch):
@@ -151,7 +150,7 @@ def test_fetch_trending_symbols_etoro_requires_keys(monkeypatch):
 
 def test_fetch_trending_symbols_etoro_raises_when_mapping_empty(monkeypatch):
     def fake_urlopen(request, timeout):
-        return _DummyResponse([{"instrumentId": 1001}])
+        return _DummyResponse({"watchlists": [{"Items": [{"Instrument": 1001}]}]})
 
     monkeypatch.setenv("MARKET_TRENDING_TICKERS_PROVIDER", "ETORO")
     monkeypatch.setenv("ETORO_API_KEY", "api-key")
@@ -161,6 +160,26 @@ def test_fetch_trending_symbols_etoro_raises_when_mapping_empty(monkeypatch):
 
     with pytest.raises(RuntimeError, match="Unable to resolve eToro instrument IDs into symbols"):
         data_sources.fetch_trending_symbols(limit=2)
+
+
+def test_fetch_trending_symbols_etoro_ignores_trending_candidates_count(monkeypatch):
+    captured = {"url": ""}
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        return _DummyResponse({"watchlists": [{"Items": [{"Instrument": 1}]}]})
+
+    monkeypatch.setenv("MARKET_TRENDING_TICKERS_PROVIDER", "ETORO")
+    monkeypatch.setenv("ETORO_API_KEY", "api-key")
+    monkeypatch.setenv("ETORO_USER_KEY", "user-key")
+    monkeypatch.setenv("ETORO_INSTRUMENT_ID_SYMBOL_MAP", '{"1":"AAPL"}')
+    monkeypatch.setenv("TRENDING_CANDIDATES_SEARCH_NUMBER", "999")
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    symbols = data_sources.fetch_trending_symbols(limit=1)
+
+    assert symbols == ["AAPL"]
+    assert captured["url"] == "https://public-api.etoro.com/api/v1/watchlists"
 
 
 def test_fetch_trending_symbols_invalid_provider(monkeypatch):
