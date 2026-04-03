@@ -89,6 +89,30 @@ def test_agent_proposals_view_logs_service_and_count(monkeypatch, caplog):
     ) in caplog.text
 
 
+def test_agent_session_view_exposes_guided_error_payload(monkeypatch):
+    runtime = DummyRuntime()
+    runtime._payload.update(
+        {
+            "status": "ERROR_AUTH",
+            "lastError": "Autenticazione broker fallita (401/403).",
+            "lastErrorUi": {
+                "cause": "Autenticazione broker non valida o scaduta.",
+                "nextAction": "Aggiorna le credenziali e riavvia l'agente.",
+            },
+        }
+    )
+    monkeypatch.setattr(views, "agent_runtime", runtime)
+
+    request = RequestFactory().get("/api/agent/session")
+    response = views.agent_session_view(request)
+
+    assert response.status_code == 200
+    payload = json.loads(response.content)
+    assert payload["status"] == "ERROR_AUTH"
+    assert payload["lastErrorUi"]["cause"].startswith("Autenticazione broker")
+    assert "riavvia" in payload["lastErrorUi"]["nextAction"]
+
+
 @override_settings(ALLOWED_HOSTS=["testserver", "localhost"])
 def test_dashboard_sets_csrf_cookie():
     client = Client(enforce_csrf_checks=True)

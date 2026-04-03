@@ -127,11 +127,41 @@ class AgentRuntime:
             "proposals_created": 0,
             "proposals_invalidated": 0,
             "approval_rate": 0.0,
+            "recoverable_errors": 0,
         }
         self._llm_calls = 0
         self._llm_failures = 0
         self._market = market
         self._attention_engine = AttentionEngine()
+        self._recoverable_error_count = 0
+
+    def _parse_error_status_code(self, exc: Exception) -> int | None:
+        message = str(exc)
+        match = re.search(r"status=(\d{3})", message)
+        if not match:
+            return None
+        try:
+            return int(match.group(1))
+        except ValueError:
+            return None
+
+    def _is_recoverable_error(self, exc: Exception) -> bool:
+        status_code = self._parse_error_status_code(exc)
+        if status_code in {429, 408, 500, 502, 503, 504}:
+            return True
+        normalized = str(exc).lower()
+        return any(
+            token in normalized
+            for token in ("timeout", "timed out", "temporarily unavailable", "connection reset")
+        )
+
+    def _is_auth_fatal_error(self, exc: Exception) -> bool:
+        status_code = self._parse_error_status_code(exc)
+        return status_code in {401, 403}
+
+    def _recoverable_backoff_seconds(self) -> float:
+        base = max(self._config.loop_interval_ms / 1000, 1) if self._config else 1
+        return min(base * (2 ** min(self._recoverable_error_count, 4)), 30)
 
     def _validate_broker_config(self) -> None:
         if self._market == "crypto":
@@ -272,6 +302,17 @@ class AgentRuntime:
         self._metrics["approval_rate"] = (
             0.0 if approval_count == 0 else approved_count / approval_count
         )
+        last_error_ui = None
+        if session.status == "ERROR_AUTH":
+            last_error_ui = {
+                "cause": "Autenticazione broker non valida o scaduta.",
+                "nextAction": "Aggiorna le credenziali ETORO_API_KEY e riavvia l'agente.",
+            }
+        elif session.last_error:
+            last_error_ui = {
+                "cause": session.last_error,
+                "nextAction": "Verifica connettività/API e controlla i log recenti.",
+            }
         return {
             "sessionId": str(session.session_id),
             "status": session.status,
@@ -292,6 +333,7 @@ class AgentRuntime:
             "pendingApprovals": pending_count,
             "recentLogs": logs,
             "lastError": session.last_error,
+            "lastErrorUi": last_error_ui,
             "capabilities": session.capability_registry,
             "streamingConnected": session.streaming_connected,
             "streamStatus": "active" if session.streaming_connected else "polling",
@@ -709,10 +751,65 @@ class AgentRuntime:
                 self._session.worker_healthy = True
                 self._session.save(update_fields=["heartbeat_at", "worker_healthy"])
 
-                account = adapter.getAccountSummary()
-                positions = adapter.getPositions()
-                orders = adapter.getOpenOrders()
-                history = adapter.getPortfolioHistory()
+                try:
+                    account = adapter.getAccountSummary()
+                    positions = adapter.getPositions()
+                    orders = adapter.getOpenOrders()
+                    history = adapter.getPortfolioHistory()
+                except Exception as exc:
+                    error_message = str(exc)
+                    if self._is_auth_fatal_error(exc):
+                        self._session.status = "ERROR_AUTH"
+                        self._session.last_error = (
+                            "Autenticazione broker fallita (401/403). Verifica ETORO_API_KEY."
+                        )
+                        self._session.worker_healthy = False
+                        metadata = dict(self._session.metadata or {})
+                        metadata["reason"] = "auth_forbidden"
+                        metadata["statusCode"] = self._parse_error_status_code(exc)
+                        self._session.metadata = metadata
+                        self._session.save(
+                            update_fields=["status", "last_error", "worker_healthy", "metadata"]
+                        )
+                        logger.error(
+                            "agent loop stopped for fatal auth error status=%s error=%s",
+                            metadata["statusCode"],
+                            error_message,
+                        )
+                        self._log(
+                            "ERROR",
+                            "auth",
+                            "Autenticazione broker fallita; loop interrotto",
+                            payload=metadata,
+                        )
+                        break
+                    if self._is_recoverable_error(exc):
+                        self._recoverable_error_count += 1
+                        self._metrics["recoverable_errors"] += 1
+                        logger.error(
+                            "recoverable agent loop error retry=%s error=%s",
+                            self._recoverable_error_count,
+                            error_message,
+                        )
+                        self._log(
+                            "ERROR",
+                            "broker_sync",
+                            "Errore recuperabile in sync broker, retry in corso",
+                            payload={
+                                "error": error_message,
+                                "recoverable": True,
+                                "retryCount": self._recoverable_error_count,
+                            },
+                        )
+                        backoff_seconds = self._recoverable_backoff_seconds()
+                        time.sleep(backoff_seconds)
+                        continue
+
+                    logger.error("agent loop fatal sync error: %s", error_message)
+                    raise
+                else:
+                    self._recoverable_error_count = 0
+
                 if capabilities.get("supportsFeeds"):
                     self._session.last_feed_sync_at = timezone.now()
                 if capabilities.get("supportsWatchlists"):
@@ -1082,7 +1179,7 @@ class AgentRuntime:
                 self._execute_approved(adapter=adapter, snapshot_hash=snapshot_hash)
                 time.sleep(self._config.loop_interval_ms / 1000)
         except Exception as exc:
-            logger.error("agent loop crashed: %s", exc)
+            logger.error("agent loop crashed with unhandled error: %s", exc)
             self._session.status = "ERROR"
             self._session.last_error = str(exc)
             self._session.worker_healthy = False
@@ -1090,7 +1187,7 @@ class AgentRuntime:
             self._log("ERROR", "error", "Agent loop failed", payload={"error": str(exc)})
         finally:
             self._session.stopped_at = timezone.now()
-            if self._session.status != "ERROR":
+            if self._session.status not in {"ERROR", "ERROR_AUTH"}:
                 self._session.status = "STOPPED"
             self._session.save(update_fields=["stopped_at", "status"])
             self._log("INFO", "lifecycle", "Agent stopped")

@@ -49,3 +49,19 @@ def test_validate_broker_config_skips_etoro_for_crypto(monkeypatch):
     monkeypatch.delenv("ETORO_API_BASE_URL", raising=False)
 
     runtime._validate_broker_config()
+
+
+def test_error_classifier_marks_403_as_fatal_auth():
+    runtime = AgentRuntime(market="trader")
+    exc = RuntimeError("eToro API request failed status=403 method=GET url=x reason=Forbidden")
+
+    assert runtime._is_auth_fatal_error(exc) is True
+    assert runtime._is_recoverable_error(exc) is False
+
+
+def test_error_classifier_marks_429_as_recoverable():
+    runtime = AgentRuntime(market="trader")
+    exc = RuntimeError("eToro API request failed status=429 method=GET url=x reason=Too Many")
+
+    assert runtime._is_recoverable_error(exc) is True
+    assert runtime._is_auth_fatal_error(exc) is False
