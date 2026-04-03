@@ -222,7 +222,18 @@ def get_trending_tickers_from_etoro(*, count: int, limit: int = 10) -> list[str]
         try:
             with urlopen(request, timeout=8) as response:
                 raw_payload = response.read().decode("utf-8")
-                payload = json.loads(raw_payload)
+                try:
+                    payload = json.loads(raw_payload)
+                except json.JSONDecodeError as exc:
+                    logger.error(
+                        "Unable to parse eToro market recommendations JSON url=%s error=%s body=%s",
+                        api_url,
+                        exc,
+                        raw_payload[:500],
+                    )
+                    raise RuntimeError(
+                        "Unable to parse trending symbols response from eToro."
+                    ) from exc
                 logger.info(
                     "External response service=etoro endpoint=market_recommendations "
                     "status=%s bytes=%s",
