@@ -33,14 +33,26 @@ def test_validate_broker_config_logs_target_without_secret(monkeypatch, caplog):
     runtime = AgentRuntime(market="trader")
     monkeypatch.setenv("ETORO_API_KEY", "valid_key_token_123")
     monkeypatch.setenv("ETORO_API_BASE_URL", "https://broker.example.test/v1")
+    monkeypatch.setenv("ETORO_ENV", "DEMO")
 
     caplog.set_level("INFO", logger="trading_bot.bot.agent_runtime")
     runtime._validate_broker_config()
 
     assert "broker preflight target" in caplog.text
     assert "host=broker.example.test" in caplog.text
-    assert "target_path=/v1/account/summary" in caplog.text
+    assert "target_path=/v1/trading/info/demo/portfolio" in caplog.text
+    assert "env=DEMO" in caplog.text
     assert "valid_key_token_123" not in caplog.text
+
+
+def test_validate_broker_config_rejects_invalid_etoro_env(monkeypatch):
+    runtime = AgentRuntime(market="trader")
+    monkeypatch.setenv("ETORO_API_KEY", "valid_key_token_123")
+    monkeypatch.setenv("ETORO_API_BASE_URL", "https://broker.example.test/v1")
+    monkeypatch.setenv("ETORO_ENV", "PAPER")
+
+    with pytest.raises(ValueError, match="ETORO_ENV"):
+        runtime._validate_broker_config()
 
 
 def test_validate_broker_config_skips_etoro_for_crypto(monkeypatch):

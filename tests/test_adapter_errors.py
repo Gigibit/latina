@@ -60,11 +60,41 @@ def test_etoro_adapter_uses_public_api_headers(monkeypatch):
 
     adapter.getAccountSummary()
 
-    assert captured["url"] == "https://public-api.etoro.com/api/v1/account/summary"
+    assert captured["url"] == "https://public-api.etoro.com/api/v1/trading/info/real/portfolio"
     assert captured["headers"]["x-api-key"] == "token"
     assert captured["headers"]["x-user-key"] == "user-key"
     assert "x-request-id" in captured["headers"]
     assert captured["timeout"] == 15
+
+
+def test_etoro_adapter_uses_env_specific_account_summary_path(monkeypatch):
+    captured = {}
+
+    class DummyResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+        def read(self):
+            return b"{}"
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        return DummyResponse()
+
+    monkeypatch.setenv("ETORO_ENV", "DEMO")
+    monkeypatch.setattr("trading_bot.bot.etoro_adapter.urlopen", fake_urlopen)
+    adapter = EtoroAdapter(
+        api_key="token",
+        base_url="https://public-api.etoro.com/api/v1",
+        user_key="user-key",
+    )
+
+    adapter.getAccountSummary()
+
+    assert captured["url"] == "https://public-api.etoro.com/api/v1/trading/info/demo/portfolio"
 
 
 def test_binance_adapter_includes_http_error_body(monkeypatch):
