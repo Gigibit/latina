@@ -112,6 +112,37 @@ def test_fetch_trending_symbols_uses_etoro_provider(monkeypatch):
     assert "X-request-id" in captured["headers"]
 
 
+def test_fetch_trending_symbols_etoro_fallbacks_to_query_count_on_422(monkeypatch):
+    captured_urls: list[str] = []
+
+    def fake_urlopen(request, timeout):
+        captured_urls.append(request.full_url)
+        if request.full_url.endswith("/market-recommendations/5"):
+            raise HTTPError(
+                url=request.full_url,
+                code=422,
+                msg="Unprocessable Entity",
+                hdrs=None,
+                fp=None,
+            )
+        return _DummyResponse([{"instrumentId": 1}])
+
+    monkeypatch.setenv("MARKET_TRENDING_TICKERS_PROVIDER", "ETORO")
+    monkeypatch.setenv("ETORO_API_KEY", "api-key")
+    monkeypatch.setenv("ETORO_USER_KEY", "user-key")
+    monkeypatch.setenv("ETORO_INSTRUMENT_ID_SYMBOL_MAP", '{"1":"AAPL"}')
+    monkeypatch.setenv("TRENDING_CANDIDATES_SEARCH_NUMBER", "5")
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    symbols = data_sources.fetch_trending_symbols(region="US", limit=10)
+
+    assert symbols == ["AAPL"]
+    assert captured_urls == [
+        "https://public-api.etoro.com/api/v1/market-recommendations/5",
+        "https://public-api.etoro.com/api/v1/market-recommendations?count=5",
+    ]
+
+
 def test_fetch_trending_symbols_etoro_requires_keys(monkeypatch):
     monkeypatch.setenv("MARKET_TRENDING_TICKERS_PROVIDER", "ETORO")
     monkeypatch.delenv("ETORO_API_KEY", raising=False)

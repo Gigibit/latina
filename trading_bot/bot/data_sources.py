@@ -196,70 +196,82 @@ def get_trending_tickers_from_etoro(*, count: int, limit: int = 10) -> list[str]
         logger.error(message)
         raise RuntimeError(message)
 
-    api_url = f"https://public-api.etoro.com/api/v1/market-recommendations/{count}"
-    request = Request(
-        api_url,
-        headers={
-            "Accept": "application/json",
-            "x-request-id": os.getenv("ETORO_REQUEST_ID", str(time.time_ns())),
-            "x-api-key": api_key,
-            "x-user-key": user_key,
-            "User-Agent": "Mozilla/5.0",
-        },
-        method="GET",
-    )
+    api_urls = [
+        f"https://public-api.etoro.com/api/v1/market-recommendations/{count}",
+        f"https://public-api.etoro.com/api/v1/market-recommendations?count={count}",
+    ]
+    headers = {
+        "Accept": "application/json",
+        "X-Request-Id": os.getenv("ETORO_REQUEST_ID", str(time.time_ns())),
+        "X-Api-Key": api_key,
+        "X-User-Key": user_key,
+        "User-Agent": "Mozilla/5.0",
+    }
     retry_enabled = _is_env_flag_enabled("RETRY_BACKOFFF_ENABLED", default=True)
     max_attempts = 3 if retry_enabled else 1
     payload: object | None = None
-    for attempt in range(1, max_attempts + 1):
-        logger.info(
-            "External request service=etoro endpoint=market_recommendations provider=ETORO "
-            "count=%s attempt=%s/%s",
-            count,
-            attempt,
-            max_attempts,
-        )
-        try:
-            with urlopen(request, timeout=8) as response:
-                raw_payload = response.read().decode("utf-8")
-                payload = json.loads(raw_payload)
-                logger.info(
+    last_error: Exception | None = None
+    for api_url in api_urls:
+        request = Request(api_url, headers=headers, method="GET")
+        for attempt in range(1, max_attempts + 1):
+            logger.info(
+                "External request service=etoro endpoint=market_recommendations provider=ETORO "
+                "count=%s attempt=%s/%s url=%s",
+                count,
+                attempt,
+                max_attempts,
+                api_url,
+            )
+            try:
+                with urlopen(request, timeout=8) as response:
+                    raw_payload = response.read().decode("utf-8")
+                    payload = json.loads(raw_payload)
+                    logger.info(
+                        "External response service=etoro endpoint=market_recommendations "
+                        "status=%s bytes=%s",
+                        getattr(response, "status", "n/a"),
+                        len(raw_payload),
+                    )
+                break
+            except HTTPError as exc:
+                error_payload = exc.read().decode("utf-8", errors="replace")
+                is_rate_limited = exc.code == 429
+                should_retry = retry_enabled and is_rate_limited and attempt < max_attempts
+                logger.warning(
                     "External response service=etoro endpoint=market_recommendations "
-                    "status=%s bytes=%s",
-                    getattr(response, "status", "n/a"),
-                    len(raw_payload),
+                    "status=%s rate_limited=%s retry=%s url=%s",
+                    exc.code,
+                    is_rate_limited,
+                    should_retry,
+                    api_url,
                 )
+                if should_retry:
+                    _sleep_with_exponential_backoff(attempt)
+                    continue
+                logger.error(
+                    "Unable to fetch trending symbols from eToro status=%s url=%s body=%s",
+                    exc.code,
+                    api_url,
+                    error_payload,
+                )
+                last_error = exc
+                break
+            except (URLError, TimeoutError) as exc:
+                logger.error(
+                    "Unable to fetch trending symbols from eToro url=%s error=%s",
+                    api_url,
+                    exc,
+                )
+                raise RuntimeError("Unable to fetch trending symbols from eToro.") from exc
+        if payload is not None:
             break
-        except HTTPError as exc:
-            is_rate_limited = exc.code == 429
-            should_retry = retry_enabled and is_rate_limited and attempt < max_attempts
-            logger.warning(
-                "External response service=etoro endpoint=market_recommendations "
-                "status=%s rate_limited=%s retry=%s",
-                exc.code,
-                is_rate_limited,
-                should_retry,
-            )
-            if should_retry:
-                _sleep_with_exponential_backoff(attempt)
-                continue
-            logger.error(
-                "Unable to fetch trending symbols from eToro status=%s url=%s",
-                exc.code,
-                api_url,
-            )
-            raise RuntimeError("Unable to fetch trending symbols from eToro.") from exc
-        except (URLError, TimeoutError) as exc:
-            logger.error(
-                "Unable to fetch trending symbols from eToro url=%s error=%s",
-                api_url,
-                exc,
-            )
-            raise RuntimeError("Unable to fetch trending symbols from eToro.") from exc
 
     if payload is None:
-        logger.error("Unable to fetch trending symbols from eToro: empty payload url=%s", api_url)
-        raise RuntimeError("Unable to fetch trending symbols from eToro.")
+        logger.error(
+            "Unable to fetch trending symbols from eToro: empty payload attempted_urls=%s",
+            api_urls,
+        )
+        raise RuntimeError("Unable to fetch trending symbols from eToro.") from last_error
 
     instrument_ids = _extract_etoro_instrument_ids(payload)
     logger.info(
