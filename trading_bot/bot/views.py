@@ -587,6 +587,28 @@ def agent_proposals_view(request):
         return JsonResponse({"error": str(exc)}, status=500)
 
 
+@require_GET
+def agent_decisions_view(request):
+    _log_agent_request("agent_decisions_view", "agent_runtime")
+    try:
+        decisions = agent_runtime.decisions_payload()
+        _log_agent_response(
+            "agent_decisions_view",
+            "agent_runtime",
+            status=200,
+            proposals=decisions,
+        )
+        return JsonResponse({"decisions": decisions})
+    except Exception as exc:
+        logger.error(
+            "Response agent_decisions_view status=500 "
+            "message=Failed to read decisions error=%s",
+            exc,
+        )
+        logger.exception("Response agent_decisions_view status=500 error=%s", exc)
+        return JsonResponse({"error": str(exc)}, status=500)
+
+
 @require_http_methods(["POST"])
 def agent_approve_view(request, proposal_id: str):
     _log_agent_request("agent_approve_view", "agent_runtime", proposal_id=proposal_id)

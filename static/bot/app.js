@@ -289,7 +289,14 @@ const agentLogsOutput = document.getElementById('agent-logs-output');
 const agentProposalsContainer = document.getElementById('agent-proposals');
 const agentStartButton = document.getElementById('agent-start');
 const agentStopButton = document.getElementById('agent-stop');
+const agentAutodecisionToggle = document.getElementById('agent-autodecision-toggle');
+const agentDecisionsBody = document.getElementById('agent-decisions-body');
 let agentRefreshIntervalId = null;
+let agentAutodecisionInProgress = false;
+
+function isAgentAutodecisionEnabled() {
+  return Boolean(agentAutodecisionToggle?.checked);
+}
 
 function safeNumber(value, fallback = '-') {
   if (typeof value !== 'number' || Number.isNaN(value)) {
@@ -437,22 +444,69 @@ function renderAgentProposals(proposals) {
   });
 }
 
+function renderAgentDecisions(decisions) {
+  if (!agentDecisionsBody) return;
+  if (!decisions.length) {
+    agentDecisionsBody.innerHTML = '<tr><td colspan="4">No decisions yet.</td></tr>';
+    return;
+  }
+  agentDecisionsBody.innerHTML = decisions
+    .map((decision) => {
+      const confidence = Number.isFinite(Number(decision.confidence))
+        ? Number(decision.confidence).toFixed(2)
+        : '-';
+      const quantity = Number.isFinite(Number(decision.quantity))
+        ? Number(decision.quantity).toFixed(2)
+        : '-';
+      return `
+        <tr>
+          <td>${decision.symbol ?? '-'}</td>
+          <td>${confidence}</td>
+          <td>${decision.action ?? '-'}</td>
+          <td>${quantity}</td>
+        </tr>
+      `;
+    })
+    .join('');
+}
+
+async function runAgentAutodecision(proposals) {
+  if (!isAgentAutodecisionEnabled() || !proposals.length || agentAutodecisionInProgress) {
+    return;
+  }
+  agentAutodecisionInProgress = true;
+  try {
+    for (const proposal of proposals) {
+      await postAgent(`/api/agent/proposals/${proposal.proposalId}/approve`);
+    }
+  } catch (error) {
+    agentLogsOutput.textContent = `Error: ${error.message}`;
+  } finally {
+    agentAutodecisionInProgress = false;
+  }
+}
+
 async function refreshAgentSection() {
   if (!agentSessionOutput) return;
   try {
-    const [sessionResp, proposalResp, logsResp] = await Promise.all([
+    const [sessionResp, proposalResp, logsResp, decisionsResp] = await Promise.all([
       fetch('/api/agent/session'),
       fetch('/api/agent/proposals'),
       fetch('/api/agent/logs'),
+      fetch('/api/agent/decisions'),
     ]);
     const sessionPayload = await sessionResp.json();
     const proposalPayload = await proposalResp.json();
     const logsPayload = await logsResp.json();
+    const decisionsPayload = await decisionsResp.json();
+    const proposals = proposalPayload.proposals || [];
     agentSessionOutput.textContent = formatAgentSession(sessionPayload);
     agentCapabilitiesOutput.textContent = formatAgentCapabilities(sessionPayload.capabilities || {});
-    renderAgentProposals(proposalPayload.proposals || []);
-    agentProviderOutput.textContent = formatProviderInsights(proposalPayload.proposals || []);
+    renderAgentProposals(proposals);
+    agentProviderOutput.textContent = formatProviderInsights(proposals);
     agentLogsOutput.textContent = JSON.stringify(logsPayload.recentLogs || [], null, 2);
+    renderAgentDecisions(decisionsPayload.decisions || []);
+    await runAgentAutodecision(proposals);
   } catch (error) {
     agentLogsOutput.textContent = `Error: ${error.message}`;
   }
