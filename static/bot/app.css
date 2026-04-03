@@ -186,6 +186,15 @@ button {
   font-weight: 700;
 }
 
+.collapsible-output summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.collapsible-output pre {
+  margin: .75rem 0 0;
+}
+
 .logs-panel[open] summary {
   margin-bottom: .75rem;
 }

@@ -35,7 +35,7 @@ from trading_bot.bot.event_pipeline import (
     FusionEngine,
     LLMReasoningEngine,
 )
-from trading_bot.bot.llm import LLMDecider
+from trading_bot.bot.llm import LLMDecider, is_openai_client_available
 from trading_bot.bot.micro_variation_engine import (
     MicroVariationProposalEngine,
 )
@@ -63,7 +63,7 @@ EXECUTION_ACTIONS = {
 @dataclass
 class AgentConfig:
     etoro_api_key: str
-    openai_api_key: str
+    openai_api_key: str | None
     max_agent_loss: float
     loop_interval_ms: int
     approval_timeout_ms: int
@@ -85,8 +85,6 @@ def load_agent_config() -> AgentConfig:
     max_agent_loss_raw = os.getenv("MAX_AGENT_LOSS")
     if not etoro_api_key:
         raise ValueError("ETORO_API_KEY is required")
-    if not openai_api_key:
-        raise ValueError("OPENAI_API_KEY is required")
     if max_agent_loss_raw is None:
         raise ValueError("MAX_AGENT_LOSS is required")
 
@@ -628,6 +626,28 @@ class AgentRuntime:
                 "never authorize direct execution",
             ],
         }
+        if not self._config.openai_api_key:
+            logger.error(
+                "openai synthesis skipped: OPENAI_API_KEY missing; using fallback summary"
+            )
+            return {
+                "explanation": fused["explanationSummary"],
+                "why_now": "Signal thresholds crossed.",
+                "trade_offs": "Fallback synthesis path in use.",
+                "confidence": fused["confidenceScore"],
+            }
+
+        if not is_openai_client_available():
+            logger.error(
+                "openai synthesis skipped: openai package missing; using fallback summary"
+            )
+            return {
+                "explanation": fused["explanationSummary"],
+                "why_now": "Signal thresholds crossed.",
+                "trade_offs": "Fallback synthesis path in use.",
+                "confidence": fused["confidenceScore"],
+            }
+
         try:
             decider = LLMDecider(
                 provider="openai",

@@ -291,6 +291,77 @@ const agentStartButton = document.getElementById('agent-start');
 const agentStopButton = document.getElementById('agent-stop');
 let agentRefreshIntervalId = null;
 
+function safeNumber(value, fallback = '-') {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return fallback;
+  }
+  return value;
+}
+
+function formatAgentSession(payload) {
+  const lines = [
+    `Session: ${payload?.sessionId || '-'}`,
+    `Status: ${payload?.status || '-'}`,
+    `Market: ${payload?.market || '-'}`,
+    `Pending approvals: ${payload?.pendingApprovals ?? 0}`,
+    `Open proposals: ${payload?.openProposals ?? 0}`,
+    `Worker healthy: ${payload?.workerHealthy ? 'yes' : 'no'}`,
+    `Last sync: ${payload?.latestSyncAt || '-'}`,
+    `Last analysis: ${payload?.latestAnalysisAt || '-'}`,
+    `Last error: ${payload?.lastError || 'none'}`,
+    '',
+    'Portfolio',
+    `- Cash: ${payload?.cash ?? '-'}`,
+    `- Open positions: ${payload?.openPositions ?? '-'}`,
+    `- Unrealized PnL: ${payload?.unrealizedPnL ?? '-'}`,
+    `- Realized PnL: ${payload?.realizedPnL ?? '-'}`,
+    `- Drawdown: ${payload?.drawdown ?? '-'}`,
+    `- Risk level: ${payload?.riskLevel ?? '-'}`,
+    '',
+    'Runtime metrics',
+    `- Events/sec: ${safeNumber(payload?.metrics?.eventsSec)}`,
+    `- LLM latency ms: ${safeNumber(payload?.metrics?.llmLatencyMs)}`,
+    `- LLM error rate: ${safeNumber(payload?.metrics?.llmErrorRate)}`,
+    `- Proposals created: ${safeNumber(payload?.metrics?.proposalsCreated)}`,
+    `- Proposals invalidated: ${safeNumber(payload?.metrics?.proposalsInvalidated)}`,
+    `- Approval rate: ${safeNumber(payload?.metrics?.approvalRate)}`,
+    `- Recoverable errors: ${safeNumber(payload?.metrics?.recoverableErrors)}`,
+  ];
+  return lines.join('\n');
+}
+
+function formatAgentCapabilities(capabilities) {
+  const entries = Object.entries(capabilities || {});
+  if (!entries.length) {
+    return 'No capabilities detected yet.';
+  }
+  return entries
+    .map(([name, enabled]) => `- ${name}: ${enabled ? 'enabled' : 'disabled'}`)
+    .join('\n');
+}
+
+function formatProviderInsights(proposals) {
+  if (!proposals.length) {
+    return 'No provider insights available.';
+  }
+
+  return proposals
+    .map((item, index) => {
+      const providerScores = item.providerScores || {};
+      return [
+        `${index + 1}. ${item.symbol || '-'} (${item.action || '-'})`,
+        `   - technical: ${providerScores?.technical?.score ?? '-'}`,
+        `   - risk: ${providerScores?.portfolio_risk?.score ?? '-'}`,
+        `   - sentiment: ${providerScores?.social_sentiment?.score ?? '-'}`,
+        `   - watchlist: ${providerScores?.watchlist_interest?.score ?? '-'}`,
+        `   - signal freshness: ${JSON.stringify(item.signalFreshness || {})}`,
+        `   - sentiment summary: ${JSON.stringify(item.sentimentSummary || {})}`,
+        `   - invalidation: ${item.invalidationReason || 'none'}`,
+      ].join('\n');
+    })
+    .join('\n\n');
+}
+
 function getCookie(name) {
   const cookieString = document.cookie || '';
   const cookies = cookieString.split(';');
@@ -377,20 +448,10 @@ async function refreshAgentSection() {
     const sessionPayload = await sessionResp.json();
     const proposalPayload = await proposalResp.json();
     const logsPayload = await logsResp.json();
-    agentSessionOutput.textContent = JSON.stringify(sessionPayload, null, 2);
-    agentCapabilitiesOutput.textContent = JSON.stringify(sessionPayload.capabilities || {}, null, 2);
+    agentSessionOutput.textContent = formatAgentSession(sessionPayload);
+    agentCapabilitiesOutput.textContent = formatAgentCapabilities(sessionPayload.capabilities || {});
     renderAgentProposals(proposalPayload.proposals || []);
-    agentProviderOutput.textContent = JSON.stringify(
-      (proposalPayload.proposals || []).map((item) => ({
-        symbol: item.symbol,
-        providerScores: item.providerScores,
-        signalFreshness: item.signalFreshness,
-        sentimentSummary: item.sentimentSummary,
-        invalidationReason: item.invalidationReason,
-      })),
-      null,
-      2,
-    );
+    agentProviderOutput.textContent = formatProviderInsights(proposalPayload.proposals || []);
     agentLogsOutput.textContent = JSON.stringify(logsPayload.recentLogs || [], null, 2);
   } catch (error) {
     agentLogsOutput.textContent = `Error: ${error.message}`;
