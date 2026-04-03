@@ -134,16 +134,52 @@ class AgentRuntime:
         self._market = market
         self._attention_engine = AttentionEngine()
         self._recoverable_error_count = 0
+        self._trending_symbols_cache: list[str] = []
+        self._trending_refresh_thread: threading.Thread | None = None
 
     def _parse_error_status_code(self, exc: Exception) -> int | None:
         message = str(exc)
         match = re.search(r"status=(\d{3})", message)
+        if not match:
+            match = re.search(r"HTTP Error\s+(\d{3})", message, flags=re.IGNORECASE)
         if not match:
             return None
         try:
             return int(match.group(1))
         except ValueError:
             return None
+
+    def _start_trending_refresh(self) -> None:
+        with self._lock:
+            if self._trending_refresh_thread and self._trending_refresh_thread.is_alive():
+                return
+            self._trending_refresh_thread = threading.Thread(
+                target=self._refresh_trending_symbols,
+                name="agent-trending-refresh",
+                daemon=True,
+            )
+            self._trending_refresh_thread.start()
+
+    def _refresh_trending_symbols(self) -> None:
+        try:
+            universe = build_candidate_universe(
+                target_size=10,
+                min_avg_volume_20d=1.0,
+                min_latest_close=0.01,
+                fetch_symbols_fn=fetch_trending_symbols,
+            )
+            symbols = [row["symbol"] for row in universe]
+        except Exception as exc:
+            logger.error("trending background refresh failed error=%s", exc)
+            return
+
+        with self._lock:
+            self._trending_symbols_cache = symbols
+        logger.info(
+            "trending background refresh succeeded symbols_count=%s symbols=%s",
+            len(symbols),
+            symbols,
+        )
 
     def _is_recoverable_error(self, exc: Exception) -> bool:
         status_code = self._parse_error_status_code(exc)
@@ -274,8 +310,20 @@ class AgentRuntime:
             )
         except Exception as exc:
             logger.error("trending fallback selection failed error=%s", exc)
+            self._start_trending_refresh()
+            with self._lock:
+                cached_symbols = list(self._trending_symbols_cache)
+            if cached_symbols:
+                ranked_symbols.extend(cached_symbols)
+                logger.info(
+                    "analysis symbol selection using cached trending symbols_count=%s symbols=%s",
+                    len(cached_symbols),
+                    cached_symbols,
+                )
         else:
             trending_symbols = [row["symbol"] for row in universe]
+            with self._lock:
+                self._trending_symbols_cache = list(trending_symbols)
             ranked_symbols.extend(trending_symbols)
             logger.info(
                 "analysis symbol selection trending symbols_count=%s symbols=%s",

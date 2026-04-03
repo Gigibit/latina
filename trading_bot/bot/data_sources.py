@@ -998,16 +998,43 @@ def _get_etoro_candle_history(
         search_url,
     )
 
-    try:
-        with urlopen(search_request, timeout=8) as response:
-            search_payload_raw = response.read().decode("utf-8")
-    except (HTTPError, URLError, TimeoutError) as exc:
-        logger.error(
-            "External response service=etoro endpoint=market_search symbol=%s error=%s",
-            symbol.upper(),
-            exc,
-        )
-        raise RuntimeError("Unable to resolve instrumentId from eToro market search.") from exc
+    retry_enabled = _is_env_flag_enabled("RETRY_BACKOFFF_ENABLED", default=True)
+    max_attempts = 3 if retry_enabled else 1
+    search_payload_raw = ""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with urlopen(search_request, timeout=8) as response:
+                search_payload_raw = response.read().decode("utf-8")
+            break
+        except HTTPError as exc:
+            is_rate_limited = exc.code == 429
+            should_retry = retry_enabled and is_rate_limited and attempt < max_attempts
+            logger.warning(
+                "External response service=etoro endpoint=market_search "
+                "symbol=%s status=%s rate_limited=%s retry=%s attempt=%s/%s",
+                symbol.upper(),
+                exc.code,
+                is_rate_limited,
+                should_retry,
+                attempt,
+                max_attempts,
+            )
+            if should_retry:
+                _sleep_with_exponential_backoff(attempt)
+                continue
+            logger.error(
+                "External response service=etoro endpoint=market_search symbol=%s error=%s",
+                symbol.upper(),
+                exc,
+            )
+            raise RuntimeError("Unable to resolve instrumentId from eToro market search.") from exc
+        except (URLError, TimeoutError) as exc:
+            logger.error(
+                "External response service=etoro endpoint=market_search symbol=%s error=%s",
+                symbol.upper(),
+                exc,
+            )
+            raise RuntimeError("Unable to resolve instrumentId from eToro market search.") from exc
 
     try:
         search_payload = json.loads(search_payload_raw)
@@ -1063,17 +1090,46 @@ def _get_etoro_candle_history(
         candles_count,
     )
 
-    try:
-        with urlopen(candles_request, timeout=8) as response:
-            candles_raw_payload = response.read().decode("utf-8")
-    except (HTTPError, URLError, TimeoutError) as exc:
-        logger.error(
-            "External response service=etoro endpoint=candles symbol=%s instrument_id=%s error=%s",
-            symbol.upper(),
-            instrument_id,
-            exc,
-        )
-        raise RuntimeError("Unable to fetch candles from eToro.") from exc
+    candles_raw_payload = ""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            with urlopen(candles_request, timeout=8) as response:
+                candles_raw_payload = response.read().decode("utf-8")
+            break
+        except HTTPError as exc:
+            is_rate_limited = exc.code == 429
+            should_retry = retry_enabled and is_rate_limited and attempt < max_attempts
+            logger.warning(
+                "External response service=etoro endpoint=candles "
+                "symbol=%s instrument_id=%s status=%s rate_limited=%s retry=%s attempt=%s/%s",
+                symbol.upper(),
+                instrument_id,
+                exc.code,
+                is_rate_limited,
+                should_retry,
+                attempt,
+                max_attempts,
+            )
+            if should_retry:
+                _sleep_with_exponential_backoff(attempt)
+                continue
+            logger.error(
+                "External response service=etoro endpoint=candles "
+                "symbol=%s instrument_id=%s error=%s",
+                symbol.upper(),
+                instrument_id,
+                exc,
+            )
+            raise RuntimeError("Unable to fetch candles from eToro.") from exc
+        except (URLError, TimeoutError) as exc:
+            logger.error(
+                "External response service=etoro endpoint=candles "
+                "symbol=%s instrument_id=%s error=%s",
+                symbol.upper(),
+                instrument_id,
+                exc,
+            )
+            raise RuntimeError("Unable to fetch candles from eToro.") from exc
 
     try:
         payload = json.loads(candles_raw_payload)
