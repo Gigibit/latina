@@ -93,9 +93,7 @@ LOGGING = {
     },
     "loggers": {
         "trading_bot.bot": {
-            "handlers": ["console"],
             "level": LOG_LEVEL,
-            "propagate": True,
         },
     },
 }
