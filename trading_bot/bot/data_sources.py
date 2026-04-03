@@ -331,14 +331,23 @@ def _extract_etoro_symbols(payload: object) -> list[str]:
         for item in items:
             if not isinstance(item, dict):
                 continue
-            symbol_name = item.get("symbolName") or item.get("SymbolName")
+            item_type = str(item.get("itemType") or item.get("ItemType") or "").strip().lower()
+            if item_type and item_type != "instrument":
+                continue
+
+            market = item.get("market")
+            market_symbol_name = (
+                market.get("symbolName") or market.get("SymbolName")
+                if isinstance(market, dict)
+                else None
+            )
+            symbol_name = item.get("symbolName") or item.get("SymbolName") or market_symbol_name
             normalized_symbol = str(symbol_name).strip().upper() if symbol_name else ""
             if normalized_symbol:
                 if normalized_symbol not in symbols:
                     symbols.append(normalized_symbol)
                 continue
 
-            market = item.get("market")
             candidate_values = [
                 item.get("Instrument"),
                 item.get("instrument"),
