@@ -28,6 +28,7 @@ from trading_bot.bot.agent_signals import (
 )
 from trading_bot.bot.attention_engine import AttentionEngine
 from trading_bot.bot.binance_adapter import build_binance_adapter
+from trading_bot.bot.candidate_universe import build_candidate_universe, deduplicate_symbols
 from trading_bot.bot.data_sources import fetch_trending_symbols
 from trading_bot.bot.etoro_adapter import build_etoro_adapter
 from trading_bot.bot.event_pipeline import (
@@ -185,21 +186,30 @@ class AgentRuntime:
                     extracted.append(symbol)
         return extracted
 
+    def _choose_weighted_symbol(self, ranked_symbols: list[str], top_n: int = 5) -> str:
+        pool = deduplicate_symbols(ranked_symbols)[: max(top_n, 1)]
+        if not pool:
+            return "SPY"
+        weighted_scores = {
+            symbol: float(max((len(pool) - index), 1))
+            for index, symbol in enumerate(pool)
+        }
+        return max(weighted_scores, key=weighted_scores.get)
+
     def _select_analysis_symbol(
         self,
         adapter: Any,
         positions: list[dict[str, Any]],
         capabilities: dict[str, bool],
     ) -> str:
+        ranked_symbols: list[str] = []
         if capabilities.get("supportsWatchlists"):
             try:
                 watchlists = adapter.getWatchlists()
             except Exception as exc:
                 logger.error("watchlist selection failed error=%s", exc)
             else:
-                watchlist_symbols = self._extract_symbols_from_lists(watchlists)
-                if watchlist_symbols:
-                    return watchlist_symbols[0]
+                ranked_symbols.extend(self._extract_symbols_from_lists(watchlists))
 
         if capabilities.get("supportsCuratedLists"):
             try:
@@ -207,26 +217,27 @@ class AgentRuntime:
             except Exception as exc:
                 logger.error("curated selection failed error=%s", exc)
             else:
-                curated_symbols = self._extract_symbols_from_lists(curated_lists)
-                if curated_symbols:
-                    return curated_symbols[0]
+                ranked_symbols.extend(self._extract_symbols_from_lists(curated_lists))
 
-        position_symbols = [
+        ranked_symbols.extend(
             str(item.get("symbol", "")).strip().upper()
             for item in positions
             if str(item.get("symbol", "")).strip()
-        ]
-        if position_symbols:
-            return position_symbols[0]
+        )
 
         try:
-            trending = fetch_trending_symbols(limit=5)
+            universe = build_candidate_universe(
+                target_size=10,
+                min_avg_volume_20d=1.0,
+                min_latest_close=0.01,
+                fetch_symbols_fn=fetch_trending_symbols,
+            )
         except Exception as exc:
             logger.error("trending fallback selection failed error=%s", exc)
-            return "SPY"
-        if trending:
-            return str(trending[0]).strip().upper()
-        return "SPY"
+        else:
+            ranked_symbols.extend(row["symbol"] for row in universe)
+
+        return self._choose_weighted_symbol(ranked_symbols, top_n=5)
 
     def _validate_broker_config(self) -> None:
         if self._market == "crypto":

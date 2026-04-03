@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Callable
 
+from trading_bot.bot.candidate_universe import build_candidate_universe, deduplicate_symbols
 from trading_bot.bot.data_sources import (
     compute_technical_indicators,
     fetch_trending_symbols,
@@ -274,7 +275,16 @@ class ResearchSessionStore:
         cache_key = f"trending:{limit}"
         return self._cache_get_or_set(
             cache_key,
-            loader=lambda: fetch_trending_symbols(limit=limit),
+            loader=lambda: deduplicate_symbols(
+                row["symbol"]
+                for row in build_candidate_universe(
+                    target_size=limit,
+                    min_avg_volume_20d=1.0,
+                    min_latest_close=0.01,
+                    fetch_symbols_fn=fetch_trending_symbols,
+                    snapshot_fn=get_market_snapshot,
+                )
+            ),
             ttl_seconds=ttl_seconds,
         )
 
