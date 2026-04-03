@@ -294,11 +294,34 @@ const agentProposalsContainer = document.getElementById('agent-proposals');
 const agentStartButton = document.getElementById('agent-start');
 const agentStopButton = document.getElementById('agent-stop');
 
+function getCookie(name) {
+  const cookieString = document.cookie || '';
+  const cookies = cookieString.split(';');
+
+  for (const cookie of cookies) {
+    const trimmed = cookie.trim();
+    if (trimmed.startsWith(`${name}=`)) {
+      return decodeURIComponent(trimmed.slice(name.length + 1));
+    }
+  }
+
+  return '';
+}
+
 async function postAgent(url) {
-  const response = await fetch(url, { method: 'POST' });
+  const csrfToken = getCookie('csrftoken');
+  const response = await fetch(url, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      'X-CSRFToken': csrfToken,
+      Accept: 'application/json',
+    },
+  });
   const payload = await response.json();
   if (!response.ok) {
-    throw new Error(payload.error || 'Agent request failed');
+    const details = payload?.reason ? ` (${payload.reason})` : '';
+    throw new Error(payload.error || `Agent request failed with status ${response.status}${details}`);
   }
   return payload;
 }
