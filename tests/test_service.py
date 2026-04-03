@@ -417,3 +417,50 @@ def test_get_best_candidates_fails_when_all_regions_fail(monkeypatch):
 
     with pytest.raises(RuntimeError, match="Unable to fetch trending symbols"):
         get_best_candidates(limit=2, user_risk_profile="medium")
+
+
+def test_get_best_candidates_etoro_fetches_without_region_argument(monkeypatch):
+    calls = {"count": 0}
+
+    def fake_fetch(limit):
+        calls["count"] += 1
+        return ["AAA", "BBB"]
+
+    monkeypatch.setenv("MARKET_TRENDING_TICKERS_PROVIDER", "ETORO")
+    monkeypatch.setattr("trading_bot.bot.service.fetch_trending_symbols", fake_fetch)
+
+    snapshots = {
+        "AAA": type(
+            "Snapshot",
+            (),
+            {
+                "symbol": "AAA",
+                "latest_close": 100.0,
+                "pct_change_5d": 4.0,
+                "pct_change_20d": 9.0,
+                "avg_volume_20d": 100.0,
+                "latest_volume": 120.0,
+            },
+        )(),
+        "BBB": type(
+            "Snapshot",
+            (),
+            {
+                "symbol": "BBB",
+                "latest_close": 50.0,
+                "pct_change_5d": 6.0,
+                "pct_change_20d": 11.0,
+                "avg_volume_20d": 100.0,
+                "latest_volume": 160.0,
+            },
+        )(),
+    }
+    monkeypatch.setattr(
+        "trading_bot.bot.service.get_market_snapshot",
+        lambda symbol: snapshots[symbol],
+    )
+
+    result = get_best_candidates(limit=2, user_risk_profile="medium")
+
+    assert calls["count"] == 1
+    assert [candidate["symbol"] for candidate in result["candidates"]] == ["BBB", "AAA"]

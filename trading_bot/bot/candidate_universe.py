@@ -55,17 +55,23 @@ def build_candidate_universe(
     fetch_symbols_fn=fetch_trending_symbols,
     snapshot_fn=get_market_snapshot,
 ) -> list[dict[str, str]]:
-    universe_regions = _parse_universe_regions()
+    trending_provider = (
+        os.getenv("MARKET_TRENDING_TICKERS_PROVIDER", "YFINANCE").strip().upper() or "YFINANCE"
+    )
+    universe_regions = ("GLOBAL",) if trending_provider == "ETORO" else _parse_universe_regions()
     universe_max_symbols = _parse_universe_max_symbols()
     fetch_limit = max(min(target_size * 2, universe_max_symbols), 1)
 
     symbols_by_region: dict[str, str] = {}
     for region in universe_regions:
         try:
-            try:
-                region_symbols = fetch_symbols_fn(region=region, limit=fetch_limit)
-            except TypeError:
+            if trending_provider == "ETORO":
                 region_symbols = fetch_symbols_fn(limit=fetch_limit)
+            else:
+                try:
+                    region_symbols = fetch_symbols_fn(region=region, limit=fetch_limit)
+                except TypeError:
+                    region_symbols = fetch_symbols_fn(limit=fetch_limit)
         except RuntimeError as exc:
             logger.warning(
                 "Skipping universe region=%s due to upstream error: %s",
@@ -84,12 +90,18 @@ def build_candidate_universe(
             break
 
     if not symbols_by_region:
+        error_message = (
+            "Unable to fetch trending symbols from eToro."
+            if trending_provider == "ETORO"
+            else "Unable to fetch trending symbols from Yahoo Finance."
+        )
         logger.error(
-            "Candidate universe unavailable. regions=%s universe_max_symbols=%s",
+            "Candidate universe unavailable. provider=%s regions=%s universe_max_symbols=%s",
+            trending_provider,
             ",".join(universe_regions),
             universe_max_symbols,
         )
-        raise RuntimeError("Unable to fetch trending symbols from Yahoo Finance.")
+        raise RuntimeError(error_message)
 
     filtered_symbols: list[dict[str, str]] = []
     for symbol, region in symbols_by_region.items():

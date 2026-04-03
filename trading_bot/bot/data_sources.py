@@ -278,25 +278,14 @@ def get_trending_tickers_from_etoro(*, limit: int = 10) -> list[str]:
         )
         raise RuntimeError("Unable to fetch trending symbols from eToro.") from last_error
 
-    instrument_ids = _extract_etoro_instrument_ids(payload)
+    symbols = _extract_etoro_symbols(payload)
     logger.info(
-        "eToro watchlists payload parsed provider=ETORO instruments_received=%s",
-        len(instrument_ids),
-    )
-    if not instrument_ids:
-        logger.error("eToro watchlists returned no instruments.")
-        raise RuntimeError("eToro watchlists returned no instruments.")
-
-    symbols = _resolve_etoro_instrument_ids_to_symbols(instrument_ids)
-    logger.info(
-        "eToro trending symbols resolved provider=ETORO "
-        "instruments_received=%s symbols_resolved=%s",
-        len(instrument_ids),
+        "eToro watchlists payload parsed provider=ETORO symbols_received=%s",
         len(symbols),
     )
     if not symbols:
-        logger.error("Unable to resolve any eToro instrumentId to symbol.")
-        raise RuntimeError("Unable to resolve eToro instrument IDs into symbols.")
+        logger.error("Unable to resolve any eToro symbolName to symbol.")
+        raise RuntimeError("Unable to resolve eToro symbols from symbolName.")
     return symbols[: max(limit, 1)]
 
 
@@ -304,7 +293,7 @@ def _get_trending_provider() -> str:
     return os.getenv("MARKET_TRENDING_TICKERS_PROVIDER", "YFINANCE").strip().upper() or "YFINANCE"
 
 
-def _extract_etoro_instrument_ids(payload: object) -> list[int]:
+def _extract_etoro_symbols(payload: object) -> list[str]:
     def _coerce_positive_int(value: object) -> int | None:
         if isinstance(value, int) and value > 0:
             return value
@@ -325,7 +314,8 @@ def _extract_etoro_instrument_ids(payload: object) -> list[int]:
         )
     else:
         watchlists = []
-    instrument_ids: list[int] = []
+    symbols: list[str] = []
+    unresolved_ids: list[int] = []
     for watchlist in watchlists:
         if not isinstance(watchlist, dict):
             continue
@@ -341,6 +331,13 @@ def _extract_etoro_instrument_ids(payload: object) -> list[int]:
         for item in items:
             if not isinstance(item, dict):
                 continue
+            symbol_name = item.get("symbolName") or item.get("SymbolName")
+            normalized_symbol = str(symbol_name).strip().upper() if symbol_name else ""
+            if normalized_symbol:
+                if normalized_symbol not in symbols:
+                    symbols.append(normalized_symbol)
+                continue
+
             market = item.get("market")
             candidate_values = [
                 item.get("Instrument"),
@@ -364,34 +361,11 @@ def _extract_etoro_instrument_ids(payload: object) -> list[int]:
                 ),
                 None,
             )
-
-            if instrument_id is not None and instrument_id not in instrument_ids:
-                instrument_ids.append(instrument_id)
-    return instrument_ids
-
-
-def _resolve_etoro_instrument_ids_to_symbols(instrument_ids: list[int]) -> list[str]:
-    raw_map = os.getenv("ETORO_INSTRUMENT_ID_SYMBOL_MAP", "").strip()
-    configured_map: dict[str, str] = {}
-    if raw_map:
-        try:
-            parsed = json.loads(raw_map)
-            configured_map = parsed if isinstance(parsed, dict) else {}
-        except json.JSONDecodeError:
-            logger.error(
-                "Invalid ETORO_INSTRUMENT_ID_SYMBOL_MAP value: expected JSON object."
-            )
-    symbols: list[str] = []
-    unresolved_ids: list[int] = []
-    for instrument_id in instrument_ids:
-        symbol = configured_map.get(str(instrument_id), "").strip().upper()
-        if symbol:
-            symbols.append(symbol)
-        else:
-            unresolved_ids.append(instrument_id)
+            if instrument_id is not None and instrument_id not in unresolved_ids:
+                unresolved_ids.append(instrument_id)
     if unresolved_ids:
         logger.warning(
-            "eToro trending symbols partial mapping unresolved_instrument_ids=%s",
+            "eToro watchlists items missing symbolName unresolved_instrument_ids=%s",
             unresolved_ids,
         )
     return symbols
