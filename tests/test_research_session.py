@@ -294,6 +294,128 @@ def test_research_job_threshold_uses_calibrated_final_confidence(monkeypatch):
         == job.result["decision"]["risk_notes"]
     )
 
+
+def test_research_job_prescreen_limits_candidates_and_tracks_rejections(monkeypatch):
+    monkeypatch.setenv("DISCOVERY_PRESCREEN_TOP_K", "2")
+    monkeypatch.setenv("DISCOVERY_PRESCREEN_MIN_SCORE", "0.7")
+    monkeypatch.setenv("DISCOVERY_PRESCREEN_MIN_SENTIMENT", "0.15")
+    monkeypatch.setenv("DISCOVERY_PRESCREEN_MIN_RELATIVE_VOLUME", "1.1")
+    monkeypatch.setenv("DISCOVERY_PRESCREEN_MAX_VOLATILITY_5D_PCT", "6")
+    monkeypatch.setenv("DISCOVERY_PRESCREEN_RELAX_STEPS", "0")
+
+    ranking = [
+        {
+            "symbol": "AAA",
+            "score": 1.2,
+            "sentiment": 0.4,
+            "relative_volume": 1.6,
+            "volatility_proxy": 3.0,
+        },
+        {
+            "symbol": "BBB",
+            "score": 1.0,
+            "sentiment": 0.25,
+            "relative_volume": 1.4,
+            "volatility_proxy": 4.0,
+        },
+        {
+            "symbol": "CCC",
+            "score": 0.6,
+            "sentiment": 0.3,
+            "relative_volume": 1.3,
+            "volatility_proxy": 4.0,
+        },
+        {
+            "symbol": "DDD",
+            "score": 0.9,
+            "sentiment": 0.1,
+            "relative_volume": 1.5,
+            "volatility_proxy": 4.0,
+        },
+    ]
+    monkeypatch.setattr(
+        ResearchSessionStore,
+        "_discover_symbol",
+        lambda self, job: ("AAA", 1.2, ranking),
+    )
+
+    called_symbols: list[str] = []
+
+    def _generate(symbol, user_risk_profile):
+        called_symbols.append(symbol)
+        return {
+            "symbol": symbol,
+            "decision": {"action": "BUY", "confidence": 90, "risk_notes": "ok"},
+        }
+
+    monkeypatch.setattr("trading_bot.bot.research_session.generate_suggestion", _generate)
+
+    store = ResearchSessionStore()
+    job = ResearchJob(session_id="s-prescreen", risk_profile="medium")
+    store._run_job(job)
+
+    assert job.status == "completed"
+    assert called_symbols == ["AAA"]
+    assert job.result is not None
+    assert job.result["discovery"]["prescreen_selected_symbols"] == ["AAA", "BBB"]
+    assert job.result["discovery"]["prescreen_discarded"] == 2
+    assert job.result["discovery"]["rejection_reasons"]["CCC"] == ["score_below_min"]
+    assert job.result["discovery"]["rejection_reasons"]["DDD"] == ["sentiment_below_min"]
+
+
+def test_research_job_prescreen_uses_progressive_relaxation(monkeypatch):
+    monkeypatch.setenv("DISCOVERY_PRESCREEN_TOP_K", "2")
+    monkeypatch.setenv("DISCOVERY_PRESCREEN_MIN_SCORE", "2.0")
+    monkeypatch.setenv("DISCOVERY_PRESCREEN_MIN_SENTIMENT", "0.6")
+    monkeypatch.setenv("DISCOVERY_PRESCREEN_MIN_RELATIVE_VOLUME", "2.0")
+    monkeypatch.setenv("DISCOVERY_PRESCREEN_MAX_VOLATILITY_5D_PCT", "2")
+    monkeypatch.setenv("DISCOVERY_PRESCREEN_RELAX_STEPS", "2")
+    monkeypatch.setenv("DISCOVERY_PRESCREEN_SCORE_RELAX_DELTA", "0.7")
+    monkeypatch.setenv("DISCOVERY_PRESCREEN_SENTIMENT_RELAX_DELTA", "0.25")
+    monkeypatch.setenv("DISCOVERY_PRESCREEN_RELATIVE_VOLUME_RELAX_DELTA", "0.45")
+    monkeypatch.setenv("DISCOVERY_PRESCREEN_VOLATILITY_RELAX_DELTA", "1.5")
+
+    ranking = [
+        {
+            "symbol": "BBB",
+            "score": 0.9,
+            "sentiment": 0.2,
+            "relative_volume": 1.2,
+            "volatility_proxy": 2.8,
+        },
+        {
+            "symbol": "CCC",
+            "score": 0.8,
+            "sentiment": 0.15,
+            "relative_volume": 1.1,
+            "volatility_proxy": 3.2,
+        },
+    ]
+    monkeypatch.setattr(
+        ResearchSessionStore,
+        "_discover_symbol",
+        lambda self, job: ("BBB", 0.9, ranking),
+    )
+    monkeypatch.setattr(
+        "trading_bot.bot.research_session.generate_suggestion",
+        lambda symbol, user_risk_profile: {
+            "symbol": symbol,
+            "decision": {"action": "BUY", "confidence": 80, "risk_notes": "ok"},
+        },
+    )
+
+    store = ResearchSessionStore()
+    job = ResearchJob(session_id="s-prescreen-relax", risk_profile="medium")
+    store._run_job(job)
+
+    assert job.status == "completed"
+    assert job.result is not None
+    assert job.result["discovery"]["selected_symbol"] == "BBB"
+    assert job.result["discovery"]["prescreen_selected_symbols"] == ["BBB", "CCC"]
+    assert job.result["discovery"]["prescreen_discarded"] == 0
+    assert job.result["discovery"]["prescreen_thresholds"]["score"] == 0.6
+
+
 def test_trading_suggestion_view_async_returns_session_status(monkeypatch):
     fake_job = SimpleNamespace(
         status="running",

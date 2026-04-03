@@ -569,6 +569,168 @@ class ResearchSessionStore:
                 normalized[symbol][key] = 0.0 if stddev == 0 else (current - mean_value) / stddev
         return normalized
 
+    @staticmethod
+    def _prescreen_top_k() -> int:
+        raw_value = os.getenv("DISCOVERY_PRESCREEN_TOP_K", "3").strip()
+        try:
+            return max(int(raw_value), 1)
+        except ValueError:
+            _log_structured_error(
+                event="config_invalid_discovery_prescreen_top_k",
+                error_type="ValueError",
+                message=f"Invalid DISCOVERY_PRESCREEN_TOP_K={raw_value}; fallback to 3.",
+            )
+            return 3
+
+    @staticmethod
+    def _prescreen_max_relax_steps() -> int:
+        raw_value = os.getenv("DISCOVERY_PRESCREEN_RELAX_STEPS", "3").strip()
+        try:
+            return min(max(int(raw_value), 0), 6)
+        except ValueError:
+            _log_structured_error(
+                event="config_invalid_discovery_prescreen_relax_steps",
+                error_type="ValueError",
+                message=f"Invalid DISCOVERY_PRESCREEN_RELAX_STEPS={raw_value}; fallback to 3.",
+            )
+            return 3
+
+    @staticmethod
+    def _prescreen_base_thresholds() -> dict[str, float]:
+        def _safe_float(env_name: str, fallback: float) -> float:
+            raw_value = os.getenv(env_name, str(fallback)).strip()
+            try:
+                return float(raw_value)
+            except ValueError:
+                _log_structured_error(
+                    event="config_invalid_discovery_prescreen_threshold",
+                    error_type="ValueError",
+                    message=f"Invalid {env_name}={raw_value}; fallback to {fallback}.",
+                )
+                return fallback
+
+        return {
+            "score": _safe_float("DISCOVERY_PRESCREEN_MIN_SCORE", -999.0),
+            "sentiment": _safe_float("DISCOVERY_PRESCREEN_MIN_SENTIMENT", -0.25),
+            "relative_volume": _safe_float("DISCOVERY_PRESCREEN_MIN_RELATIVE_VOLUME", 0.75),
+            "volatility_proxy": _safe_float("DISCOVERY_PRESCREEN_MAX_VOLATILITY_5D_PCT", 9.0),
+        }
+
+    @staticmethod
+    def _prescreen_relaxation_deltas() -> dict[str, float]:
+        def _safe_float(env_name: str, fallback: float) -> float:
+            raw_value = os.getenv(env_name, str(fallback)).strip()
+            try:
+                return max(float(raw_value), 0.0)
+            except ValueError:
+                _log_structured_error(
+                    event="config_invalid_discovery_prescreen_delta",
+                    error_type="ValueError",
+                    message=f"Invalid {env_name}={raw_value}; fallback to {fallback}.",
+                )
+                return fallback
+
+        return {
+            "score": _safe_float("DISCOVERY_PRESCREEN_SCORE_RELAX_DELTA", 0.25),
+            "sentiment": _safe_float("DISCOVERY_PRESCREEN_SENTIMENT_RELAX_DELTA", 0.05),
+            "relative_volume": _safe_float("DISCOVERY_PRESCREEN_RELATIVE_VOLUME_RELAX_DELTA", 0.1),
+            "volatility_proxy": _safe_float("DISCOVERY_PRESCREEN_VOLATILITY_RELAX_DELTA", 1.5),
+        }
+
+    def _apply_prescreen(
+        self,
+        *,
+        job: ResearchJob,
+        ranking: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], dict[str, list[str]], dict[str, float], int]:
+        top_k = self._prescreen_top_k()
+        max_steps = self._prescreen_max_relax_steps()
+        base_thresholds = self._prescreen_base_thresholds()
+        deltas = self._prescreen_relaxation_deltas()
+
+        rejection_reasons_by_symbol: dict[str, list[str]] = {}
+        reason_counter: dict[str, int] = {}
+        selected: list[dict[str, Any]] = []
+        applied_thresholds = dict(base_thresholds)
+
+        for step in range(max_steps + 1):
+            thresholds = {
+                "score": base_thresholds["score"] - (deltas["score"] * step),
+                "sentiment": base_thresholds["sentiment"] - (deltas["sentiment"] * step),
+                "relative_volume": max(
+                    base_thresholds["relative_volume"] - (deltas["relative_volume"] * step),
+                    0.0,
+                ),
+                "volatility_proxy": base_thresholds["volatility_proxy"]
+                + (deltas["volatility_proxy"] * step),
+            }
+            current_selected: list[dict[str, Any]] = []
+            step_rejections: dict[str, list[str]] = {}
+            step_reason_counter: dict[str, int] = {}
+
+            for row in ranking:
+                reasons: list[str] = []
+                if float(row["score"]) < thresholds["score"]:
+                    reasons.append("score_below_min")
+                if float(row["sentiment"]) < thresholds["sentiment"]:
+                    reasons.append("sentiment_below_min")
+                if float(row["relative_volume"]) < thresholds["relative_volume"]:
+                    reasons.append("relative_volume_below_min")
+                if float(row["volatility_proxy"]) > thresholds["volatility_proxy"]:
+                    reasons.append("volatility_above_max")
+                if reasons:
+                    step_rejections[str(row["symbol"])] = reasons
+                    for reason in reasons:
+                        step_reason_counter[reason] = step_reason_counter.get(reason, 0) + 1
+                    continue
+                current_selected.append(row)
+
+            applied_thresholds = thresholds
+            rejection_reasons_by_symbol = step_rejections
+            reason_counter = step_reason_counter
+
+            if current_selected:
+                selected = current_selected[:top_k]
+                self._append_log(
+                    job,
+                    (
+                        f"Pre-screen gate step={step}: selected={len(selected)} "
+                        f"of {len(ranking)} symbols for suggestion."
+                    ),
+                )
+                break
+
+            self._append_log(
+                job,
+                (
+                    f"Pre-screen gate step={step}: no symbols passed. "
+                    "Relaxing thresholds."
+                ),
+            )
+
+        if not selected:
+            selected = ranking[:top_k]
+            for row in selected:
+                rejection_reasons_by_symbol.pop(str(row["symbol"]), None)
+            self._append_log(
+                job,
+                (
+                    "Pre-screen gate fallback engaged: no symbol passed after relax steps; "
+                    f"using top {len(selected)} by score."
+                ),
+            )
+
+        discarded = max(len(ranking) - len(selected), 0)
+        logger.info(
+            "Research pre-screen session_id=%s selected=%s discarded=%s thresholds=%s reasons=%s",
+            job.session_id,
+            len(selected),
+            discarded,
+            applied_thresholds,
+            reason_counter,
+        )
+        return selected, rejection_reasons_by_symbol, applied_thresholds, discarded
+
     def _run_job(self, job: ResearchJob) -> None:
         try:
             self._append_log(job, "Research session started.")
@@ -591,8 +753,21 @@ class ResearchSessionStore:
             selected_symbol = symbol
             selected_score = score
             result: dict[str, Any] | None = None
+            screened_candidates, rejection_reasons, prescreen_thresholds, prescreen_discarded = (
+                self._apply_prescreen(job=job, ranking=ranking)
+            )
+            prescreen_selected_symbols = [
+                str(candidate["symbol"]) for candidate in screened_candidates
+            ]
+            self._append_log(
+                job,
+                (
+                    f"Pre-screen selected {len(screened_candidates)} symbols; "
+                    f"discarded {prescreen_discarded}."
+                ),
+            )
 
-            for candidate in ranking:
+            for candidate in screened_candidates:
                 candidate_symbol = str(candidate["symbol"])
                 candidate_score = float(candidate["score"])
                 self._append_log(
@@ -663,6 +838,12 @@ class ResearchSessionStore:
                 "selected_symbol": selected_symbol,
                 "score": round(selected_score, 4),
                 "ranking": ranking,
+                "prescreen_selected_symbols": prescreen_selected_symbols,
+                "prescreen_thresholds": {
+                    key: round(value, 6) for key, value in prescreen_thresholds.items()
+                },
+                "prescreen_discarded": prescreen_discarded,
+                "rejection_reasons": rejection_reasons,
                 "acceptance_threshold": threshold,
                 "accepted": accepted,
                 "confidence_source": confidence_source,
