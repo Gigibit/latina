@@ -305,6 +305,14 @@ def _get_trending_provider() -> str:
 
 
 def _extract_etoro_instrument_ids(payload: object) -> list[int]:
+    def _coerce_positive_int(value: object) -> int | None:
+        if isinstance(value, int) and value > 0:
+            return value
+        if isinstance(value, str) and value.isdigit():
+            parsed = int(value)
+            return parsed if parsed > 0 else None
+        return None
+
     if isinstance(payload, list):
         watchlists = payload
     elif isinstance(payload, dict):
@@ -333,20 +341,31 @@ def _extract_etoro_instrument_ids(payload: object) -> list[int]:
         for item in items:
             if not isinstance(item, dict):
                 continue
-            raw_instrument_id = (
-                item.get("Instrument")
-                or item.get("instrument")
-                or item.get("InstrumentID")
-                or item.get("InstrumentId")
-                or item.get("instrumentId")
+            market = item.get("market")
+            candidate_values = [
+                item.get("Instrument"),
+                item.get("instrument"),
+                item.get("InstrumentID"),
+                item.get("InstrumentId"),
+                item.get("instrumentId"),
+                item.get("itemId"),
+                item.get("ItemId"),
+                item.get("marketId"),
+                item.get("MarketId"),
+                market.get("id") if isinstance(market, dict) else None,
+            ]
+            instrument_id = next(
+                (
+                    parsed
+                    for parsed in (
+                        _coerce_positive_int(candidate) for candidate in candidate_values
+                    )
+                    if parsed is not None
+                ),
+                None,
             )
-            instrument_id = None
-            if isinstance(raw_instrument_id, int):
-                instrument_id = raw_instrument_id
-            elif isinstance(raw_instrument_id, str) and raw_instrument_id.isdigit():
-                instrument_id = int(raw_instrument_id)
 
-            if isinstance(instrument_id, int) and instrument_id not in instrument_ids:
+            if instrument_id is not None and instrument_id not in instrument_ids:
                 instrument_ids.append(instrument_id)
     return instrument_ids
 
