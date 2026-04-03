@@ -294,83 +294,50 @@ def _get_trending_provider() -> str:
 
 
 def _extract_etoro_symbols(payload: object) -> list[str]:
-    def _coerce_positive_int(value: object) -> int | None:
-        if isinstance(value, int) and value > 0:
-            return value
-        if isinstance(value, str) and value.isdigit():
-            parsed = int(value)
-            return parsed if parsed > 0 else None
-        return None
+    if not isinstance(payload, dict):
+        logger.error("Invalid eToro payload format: expected root object with watchlists.")
+        return []
 
-    if isinstance(payload, list):
-        watchlists = payload
-    elif isinstance(payload, dict):
-        watchlists = (
-            payload.get("watchlists")
-            or payload.get("Watchlists")
-            or payload.get("data", {}).get("watchlists")
-            or payload.get("Data", {}).get("Watchlists")
-            or []
-        )
-    else:
-        watchlists = []
+    watchlists = payload.get("watchlists")
+    if not isinstance(watchlists, list):
+        logger.error("Invalid eToro payload format: missing watchlists array.")
+        return []
+
     symbols: list[str] = []
     unresolved_ids: list[int] = []
     for watchlist in watchlists:
         if not isinstance(watchlist, dict):
             continue
-        items = (
-            watchlist.get("Items")
-            or watchlist.get("items")
-            or watchlist.get("Instruments")
-            or watchlist.get("instruments")
-            or []
-        )
+        items = watchlist.get("items")
         if not isinstance(items, list):
             continue
         for item in items:
             if not isinstance(item, dict):
                 continue
-            item_type = str(item.get("itemType") or item.get("ItemType") or "").strip().lower()
-            if item_type and item_type != "instrument":
+            item_type = str(item.get("itemType") or "").strip().lower()
+            if item_type != "instrument":
                 continue
 
             market = item.get("market")
-            market_symbol_name = (
-                market.get("symbolName") or market.get("SymbolName")
-                if isinstance(market, dict)
-                else None
+            symbol_name = market.get("symbolName") if isinstance(market, dict) else None
+            normalized_symbol = (
+                str(symbol_name).strip().upper() if isinstance(symbol_name, str) else ""
             )
-            symbol_name = item.get("symbolName") or item.get("SymbolName") or market_symbol_name
-            normalized_symbol = str(symbol_name).strip().upper() if symbol_name else ""
             if normalized_symbol:
                 if normalized_symbol not in symbols:
                     symbols.append(normalized_symbol)
                 continue
 
-            candidate_values = [
-                item.get("Instrument"),
-                item.get("instrument"),
-                item.get("InstrumentID"),
-                item.get("InstrumentId"),
-                item.get("instrumentId"),
-                item.get("itemId"),
-                item.get("ItemId"),
-                item.get("marketId"),
-                item.get("MarketId"),
-                market.get("id") if isinstance(market, dict) else None,
-            ]
-            instrument_id = next(
-                (
-                    parsed
-                    for parsed in (
-                        _coerce_positive_int(candidate) for candidate in candidate_values
-                    )
-                    if parsed is not None
-                ),
-                None,
-            )
-            if instrument_id is not None and instrument_id not in unresolved_ids:
+            instrument_id = item.get("itemId")
+            if not isinstance(instrument_id, int) and isinstance(market, dict):
+                market_id = market.get("id")
+                if isinstance(market_id, str) and market_id.isdigit():
+                    instrument_id = int(market_id)
+            if (
+                isinstance(instrument_id, int)
+                and instrument_id > 0
+                and instrument_id not in unresolved_ids
+            ):
                 unresolved_ids.append(instrument_id)
     if unresolved_ids:
         logger.warning(
