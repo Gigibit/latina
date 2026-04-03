@@ -64,12 +64,38 @@ class EtoroAdapter:
                 return json.loads(raw) if raw else {}
         except HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace").strip()
+            raw_headers = exc.headers.items() if exc.headers else []
+            response_headers = {key.lower(): value for key, value in raw_headers}
+            content_type = response_headers.get("content-type", "")
+            body_preview = (error_body[:500] + "...") if len(error_body) > 500 else error_body
+            error_json: dict[str, Any] | None = None
+            if "json" in content_type and error_body:
+                try:
+                    parsed_json = json.loads(error_body)
+                    if isinstance(parsed_json, dict):
+                        error_json = parsed_json
+                except json.JSONDecodeError:
+                    logger.error(
+                        "eToro API error response is not valid JSON "
+                        "status=%s method=%s url=%s content_type=%s body_preview=%s",
+                        exc.code,
+                        method,
+                        endpoint,
+                        content_type,
+                        body_preview or "<empty>",
+                    )
             message = (
                 "eToro API request failed "
                 f"status={exc.code} method={method} url={endpoint} "
                 f"reason={exc.reason} body={error_body or '<empty>'}"
             )
-            logger.error(message)
+            logger.error(
+                "%s response_headers=%s response_json=%s response_body_preview=%s",
+                message,
+                response_headers or {},
+                error_json,
+                body_preview or "<empty>",
+            )
             raise RuntimeError(message) from exc
         except URLError as exc:
             message = (
