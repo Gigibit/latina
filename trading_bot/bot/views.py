@@ -110,9 +110,12 @@ def trading_suggestion_view(request):
     status_only = request.GET.get("status", "false").lower() in {"1", "true", "yes", "on"}
     session_id = request.GET.get("session_id")
     symbols_raw = request.GET.get("symbols")
-    symbol = request.GET.get("symbol", "AAPL")
+    symbol = request.GET.get("symbol")
     risk_profile = request.GET.get("risk", "medium")
     symbols = [item.strip().upper() for item in (symbols_raw or "").split(",") if item.strip()]
+    if not symbols and symbol:
+        symbols = [symbol.strip().upper()]
+    single_symbol = (symbol or "AAPL").strip().upper()
 
     logger.info(
         "Request trading_suggestion_view async=%s status_only=%s session_id=%s "
@@ -146,7 +149,7 @@ def trading_suggestion_view(request):
                 job = research_sessions.get_or_create(
                     session_id=session_id,
                     risk_profile=risk_profile,
-                    candidate_symbols=symbols,
+                    candidate_symbols=symbols or None,
                 )
 
             payload = {
@@ -176,7 +179,7 @@ def trading_suggestion_view(request):
                 ],
             }
         else:
-            payload = generate_suggestion(symbol=symbol, user_risk_profile=risk_profile)
+            payload = generate_suggestion(symbol=single_symbol, user_risk_profile=risk_profile)
         logger.info(
             "Response trading_suggestion_view status=200 async=false mode=%s risk=%s",
             "multi-symbol" if symbols else "single-symbol",
