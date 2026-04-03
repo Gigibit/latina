@@ -206,6 +206,33 @@ def test_fetch_trending_symbols_etoro_accepts_alternative_payload_shapes(monkeyp
     assert symbols == ["AAPL", "MSFT"]
 
 
+def test_fetch_trending_symbols_etoro_accepts_public_api_watchlist_items(monkeypatch):
+    def fake_urlopen(request, timeout):
+        return _DummyResponse(
+            {
+                "watchlists": [
+                    {
+                        "items": [
+                            {"itemId": 1, "itemType": "Instrument"},
+                            {"itemType": "Instrument", "market": {"id": "2"}},
+                            {"itemId": 0, "itemType": "Instrument"},
+                        ]
+                    }
+                ]
+            }
+        )
+
+    monkeypatch.setenv("MARKET_TRENDING_TICKERS_PROVIDER", "ETORO")
+    monkeypatch.setenv("ETORO_API_KEY", "api-key")
+    monkeypatch.setenv("ETORO_USER_KEY", "user-key")
+    monkeypatch.setenv("ETORO_INSTRUMENT_ID_SYMBOL_MAP", '{"1":"AAPL","2":"MSFT"}')
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    symbols = data_sources.fetch_trending_symbols(limit=10)
+
+    assert symbols == ["AAPL", "MSFT"]
+
+
 def test_fetch_trending_symbols_invalid_provider(monkeypatch):
     monkeypatch.setenv("MARKET_TRENDING_TICKERS_PROVIDER", "UNKNOWN")
     with pytest.raises(ValueError, match="MARKET_TRENDING_TICKERS_PROVIDER must be one of"):
