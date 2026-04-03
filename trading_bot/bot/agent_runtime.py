@@ -237,7 +237,16 @@ class AgentRuntime:
         else:
             ranked_symbols.extend(row["symbol"] for row in universe)
 
-        return self._choose_weighted_symbol(ranked_symbols, top_n=5)
+        selected_symbol = self._choose_weighted_symbol(ranked_symbols, top_n=5)
+        logger.info(
+            "analysis symbol selection selected=%s candidate_count=%s "
+            "candidates=%s used_spy_fallback=%s",
+            selected_symbol,
+            len(ranked_symbols),
+            ranked_symbols,
+            selected_symbol == "SPY",
+        )
+        return selected_symbol
 
     def _validate_broker_config(self) -> None:
         if self._market == "crypto":
