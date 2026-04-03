@@ -4,12 +4,14 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 from django.utils import timezone
 
@@ -131,6 +133,54 @@ class AgentRuntime:
         self._market = market
         self._attention_engine = AttentionEngine()
 
+    def _validate_broker_config(self) -> None:
+        if self._market == "crypto":
+            return
+
+        raw_api_key = os.getenv("ETORO_API_KEY", "")
+        api_key = raw_api_key.strip()
+        if not api_key:
+            message = "Broker configuration invalid: ETORO_API_KEY is missing."
+            logger.error(
+                "broker preflight failed market=%s reason=missing_api_key",
+                self._market,
+            )
+            raise ValueError(message)
+        if api_key != raw_api_key or not re.fullmatch(r"[A-Za-z0-9._\-]{12,}", api_key):
+            message = (
+                "Broker configuration invalid: ETORO_API_KEY format is not valid "
+                "(expected at least 12 chars, only letters/numbers/._-)."
+            )
+            logger.error(
+                "broker preflight failed market=%s reason=invalid_api_key_format",
+                self._market,
+            )
+            raise ValueError(message)
+
+        base_url = os.getenv("ETORO_API_BASE_URL", "https://api.etoro.com").strip()
+        parsed = urlparse(base_url)
+        if parsed.scheme != "https" or not parsed.netloc:
+            message = (
+                "Broker configuration invalid: ETORO_API_BASE_URL must be a valid HTTPS URL "
+                "(example: https://api.etoro.com)."
+            )
+            logger.error(
+                "broker preflight failed market=%s reason=invalid_base_url value=%s",
+                self._market,
+                base_url,
+            )
+            raise ValueError(message)
+
+        base_path = parsed.path.rstrip("/") or "/"
+        target_path = f"{base_path}/account/summary" if base_path != "/" else "/account/summary"
+        logger.info(
+            "broker preflight target market=%s host=%s base_path=%s target_path=%s",
+            self._market,
+            parsed.netloc,
+            base_path,
+            target_path,
+        )
+
     def _log(self, level: str, category: str, message: str, **kwargs: Any) -> None:
         if not self._session:
             return
@@ -155,6 +205,7 @@ class AgentRuntime:
             if self._thread and self._thread.is_alive() and self._session:
                 return self._session
             self._config = load_agent_config()
+            self._validate_broker_config()
             self._micro_engine = MicroVariationProposalEngine.from_env(self._log)
             self._event_bus = EventBus(debounce_ms=int(os.getenv("EVENT_DEBOUNCE_MS", "100")))
             self._snapshot_builder = FeatureSnapshotBuilder(
@@ -1000,12 +1051,6 @@ class AgentRuntime:
                             llm_conflicts=candidate.get("llm_conflicts", []),
                             snapshot_hash_key=candidate.get("snapshot_hash_key", ""),
                             attention_summary=candidate.get("attention_summary", {}),
-                        )
-                        category = (
-                            "micro_engine"
-                            if candidate["sentiment_summary"].get("proposalOrigin")
-                            == MICRO_PROPOSAL_ORIGIN
-                            else "signal_fusion"
                         )
                         self._log(
                             "INFO",
