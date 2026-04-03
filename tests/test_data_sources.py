@@ -3,6 +3,7 @@ import types
 import uuid
 from datetime import datetime, timedelta
 from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -549,6 +550,94 @@ def test_get_candle_history_massive_requires_api_key(monkeypatch):
         data_sources.get_candle_history(symbol="AAPL")
 
 
+def test_get_candle_history_etoro_provider(monkeypatch):
+    captured = {"search_url": "", "candles_url": ""}
+
+    def fake_urlopen(request, timeout):
+        if "/market-data/search" in request.full_url:
+            captured["search_url"] = request.full_url
+            return _DummyResponse(
+                {
+                    "items": [
+                        {"instrumentId": 1001, "symbol": "MSFT"},
+                        {"instrumentId": 42, "symbol": "AAPL"},
+                    ]
+                }
+            )
+        captured["candles_url"] = request.full_url
+        return _DummyResponse(
+            {
+                "interval": "OneDay",
+                "candles": [
+                    {
+                        "instrumentId": 42,
+                        "candles": [
+                            {
+                                "instrumentID": 42,
+                                "fromDate": "2024-01-02T00:00:00Z",
+                                "open": 10,
+                                "high": 11,
+                                "low": 9,
+                                "close": 10.5,
+                                "volume": 100,
+                            },
+                            {
+                                "instrumentID": 42,
+                                "fromDate": "2024-01-03T00:00:00Z",
+                                "open": 11,
+                                "high": 12,
+                                "low": 10,
+                                "close": 11.5,
+                                "volume": 120,
+                            },
+                        ],
+                    }
+                ],
+            }
+        )
+
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "etoro")
+    monkeypatch.setenv("ETORO_API_KEY", "api-key")
+    monkeypatch.setenv("ETORO_USER_KEY", "user-key")
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    history = data_sources.get_candle_history(symbol="AAPL", candle_size="1d", lookback_candles=2)
+
+    parsed = urlparse(captured["search_url"])
+    query = parse_qs(parsed.query)
+    assert parsed.path == "/api/v1/market-data/search"
+    assert query["searchText"] == ["AAPL"]
+    assert query["fields"] == ["instrumentId,symbol,displayname"]
+    assert captured["candles_url"].endswith(
+        "/api/v1/market-data/instruments/42/history/candles/asc/OneDay/2"
+    )
+    assert list(history.columns) == ["Open", "High", "Low", "Close", "Volume"]
+    assert len(history) == 2
+    assert str(history.index[0].date()) == "2024-01-02"
+
+
+def test_get_candle_history_etoro_requires_credentials(monkeypatch):
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "etoro")
+    monkeypatch.delenv("ETORO_API_KEY", raising=False)
+    monkeypatch.delenv("ETORO_USER_KEY", raising=False)
+
+    with pytest.raises(RuntimeError, match="ETORO_API_KEY and ETORO_USER_KEY are required"):
+        data_sources.get_candle_history(symbol="AAPL")
+
+
+def test_get_candle_history_etoro_raises_when_instrument_missing(monkeypatch):
+    def fake_urlopen(request, timeout):
+        return _DummyResponse({"items": []})
+
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "etoro")
+    monkeypatch.setenv("ETORO_API_KEY", "api-key")
+    monkeypatch.setenv("ETORO_USER_KEY", "user-key")
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError, match="Unable to resolve instrumentId"):
+        data_sources.get_candle_history(symbol="AAPL")
+
+
 def test_get_candle_history_yfinance_falls_back_to_stooq(monkeypatch):
     csv_payload = """Date,Open,High,Low,Close,Volume
 2024-01-02,10,11,9,10.5,100
@@ -635,6 +724,17 @@ def test_get_candle_history_yfinance_intraday_does_not_fallback_to_stooq(monkeyp
 
 def test_fetch_fundamental_metrics_skips_for_stooq(monkeypatch):
     monkeypatch.setenv("MARKETS_DATA_PROVIDER", "stooq")
+
+    metrics = data_sources.fetch_fundamental_metrics("AAPL")
+
+    assert metrics.pe_ratio is None
+    assert metrics.eps is None
+    assert metrics.debt_to_equity is None
+    assert metrics.market_cap is None
+
+
+def test_fetch_fundamental_metrics_skips_for_etoro(monkeypatch):
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "etoro")
 
     metrics = data_sources.fetch_fundamental_metrics("AAPL")
 

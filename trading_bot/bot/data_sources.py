@@ -13,7 +13,7 @@ from datetime import date
 from io import StringIO
 from statistics import mean
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlencode
 from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
@@ -446,6 +446,12 @@ def get_candle_history(symbol: str, candle_size: str = "1d", lookback_candles: i
             candle_size=candle_size,
             lookback_candles=lookback_candles,
         )
+    elif provider == "etoro":
+        return _get_etoro_candle_history(
+            symbol=symbol,
+            candle_size=candle_size,
+            lookback_candles=lookback_candles,
+        )
     else:
         logger.error(
             "Candle history invalid provider selection symbol=%s provider=%s",
@@ -453,7 +459,7 @@ def get_candle_history(symbol: str, candle_size: str = "1d", lookback_candles: i
             provider,
         )
         raise ValueError(
-            "MARKETS_DATA_PROVIDER must be one of: yfinance, stooq, alpha_vantage, massive"
+            "MARKETS_DATA_PROVIDER must be one of: yfinance, stooq, alpha_vantage, massive, etoro"
         )
 
     logger.info(
@@ -928,6 +934,234 @@ def _get_massive_candle_history(
     return frame
 
 
+def _get_etoro_candle_history(
+    symbol: str, candle_size: str = "1d", lookback_candles: int = 180
+):
+    import pandas as pd
+
+    api_key = os.getenv("ETORO_API_KEY", "").strip()
+    user_key = os.getenv("ETORO_USER_KEY", "").strip()
+    if not api_key or not user_key:
+        logger.error(
+            "eToro candle history missing credentials symbol=%s provider=etoro",
+            symbol.upper(),
+        )
+        raise RuntimeError(
+            "ETORO_API_KEY and ETORO_USER_KEY are required when MARKETS_DATA_PROVIDER=etoro"
+        )
+
+    interval, candle_span = resolve_candle_size(candle_size)
+    interval_map = {
+        "1h": "OneHour",
+        "1d": "OneDay",
+    }
+    etoro_interval = interval_map.get(interval)
+    if etoro_interval is None:
+        logger.error(
+            "eToro candle history invalid interval symbol=%s candle_size=%s",
+            symbol.upper(),
+            candle_size,
+        )
+        raise ValueError("eToro only supports candle_size values that map to 1h or 1d intervals.")
+
+    requested_rows = max(int(lookback_candles * candle_span), 1)
+    candles_count = min(requested_rows, 1000)
+    if candles_count < requested_rows:
+        logger.warning(
+            "eToro candle history capped candles_count symbol=%s requested_rows=%s max_rows=%s",
+            symbol.upper(),
+            requested_rows,
+            candles_count,
+        )
+
+    headers = {
+        "Accept": "application/json",
+        "X-Request-Id": os.getenv("ETORO_REQUEST_ID", str(uuid.uuid4())),
+        "X-Api-Key": api_key,
+        "X-User-Key": user_key,
+        "User-Agent": "Mozilla/5.0",
+    }
+    base_url = "https://public-api.etoro.com/api/v1/market-data"
+    search_query = urlencode(
+        {
+            "searchText": symbol.upper(),
+            "fields": "instrumentId,symbol,displayname",
+            "pageSize": 25,
+            "pageNumber": 1,
+        }
+    )
+    search_url = f"{base_url}/search?{search_query}"
+    search_request = Request(search_url, headers=headers, method="GET")
+    logger.info(
+        "External request service=etoro endpoint=market_search symbol=%s url=%s",
+        symbol.upper(),
+        search_url,
+    )
+
+    try:
+        with urlopen(search_request, timeout=8) as response:
+            search_payload_raw = response.read().decode("utf-8")
+    except (HTTPError, URLError, TimeoutError) as exc:
+        logger.error(
+            "External response service=etoro endpoint=market_search symbol=%s error=%s",
+            symbol.upper(),
+            exc,
+        )
+        raise RuntimeError("Unable to resolve instrumentId from eToro market search.") from exc
+
+    try:
+        search_payload = json.loads(search_payload_raw)
+    except json.JSONDecodeError as exc:
+        logger.error(
+            "External response service=etoro endpoint=market_search symbol=%s error=%s body=%s",
+            symbol.upper(),
+            exc,
+            search_payload_raw[:500],
+        )
+        raise RuntimeError("Unable to parse eToro market search response.") from exc
+
+    items = search_payload.get("items") if isinstance(search_payload, dict) else None
+    instrument_id: int | None = None
+    if isinstance(items, list):
+        normalized_symbol = symbol.upper()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item_symbol = str(item.get("symbol") or "").strip().upper()
+            candidate_id = item.get("instrumentId")
+            if item_symbol == normalized_symbol and isinstance(candidate_id, int):
+                instrument_id = candidate_id
+                break
+        if instrument_id is None:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                candidate_id = item.get("instrumentId")
+                if isinstance(candidate_id, int):
+                    instrument_id = candidate_id
+                    break
+    if instrument_id is None:
+        logger.error(
+            "External response service=etoro endpoint=market_search "
+            "symbol=%s missing_instrument_id=true",
+            symbol.upper(),
+        )
+        raise RuntimeError(
+            f"Unable to resolve instrumentId from eToro market search for '{symbol}'."
+        )
+
+    candles_url = (
+        f"{base_url}/instruments/{instrument_id}/history/candles/asc/{etoro_interval}/{candles_count}"
+    )
+    candles_request = Request(candles_url, headers=headers, method="GET")
+    logger.info(
+        "External request service=etoro endpoint=candles "
+        "symbol=%s instrument_id=%s interval=%s rows=%s",
+        symbol.upper(),
+        instrument_id,
+        etoro_interval,
+        candles_count,
+    )
+
+    try:
+        with urlopen(candles_request, timeout=8) as response:
+            candles_raw_payload = response.read().decode("utf-8")
+    except (HTTPError, URLError, TimeoutError) as exc:
+        logger.error(
+            "External response service=etoro endpoint=candles symbol=%s instrument_id=%s error=%s",
+            symbol.upper(),
+            instrument_id,
+            exc,
+        )
+        raise RuntimeError("Unable to fetch candles from eToro.") from exc
+
+    try:
+        payload = json.loads(candles_raw_payload)
+    except json.JSONDecodeError as exc:
+        logger.error(
+            "External response service=etoro endpoint=candles "
+            "symbol=%s instrument_id=%s error=%s body=%s",
+            symbol.upper(),
+            instrument_id,
+            exc,
+            candles_raw_payload[:500],
+        )
+        raise RuntimeError("Unable to parse candles response from eToro.") from exc
+
+    grouped_candles = payload.get("candles") if isinstance(payload, dict) else None
+    rows: list[dict[str, object]] = []
+    if isinstance(grouped_candles, list):
+        for group in grouped_candles:
+            if not isinstance(group, dict):
+                continue
+            candles = group.get("candles")
+            if not isinstance(candles, list):
+                continue
+            for candle in candles:
+                if not isinstance(candle, dict):
+                    continue
+                from_date = candle.get("fromDate")
+                open_value = candle.get("open")
+                high_value = candle.get("high")
+                low_value = candle.get("low")
+                close_value = candle.get("close")
+                volume_value = candle.get("volume")
+                if None in {
+                    from_date,
+                    open_value,
+                    high_value,
+                    low_value,
+                    close_value,
+                    volume_value,
+                }:
+                    continue
+                normalized_date = pd.to_datetime(
+                    str(from_date),
+                    errors="coerce",
+                    utc=True,
+                ).tz_localize(None)
+                rows.append(
+                    {
+                        "Date": normalized_date,
+                        "Open": float(open_value),
+                        "High": float(high_value),
+                        "Low": float(low_value),
+                        "Close": float(close_value),
+                        "Volume": float(volume_value),
+                    }
+                )
+
+    frame = pd.DataFrame(rows).dropna()
+    if frame.empty:
+        logger.error(
+            "External response service=etoro endpoint=candles "
+            "symbol=%s instrument_id=%s parsed_rows=0",
+            symbol.upper(),
+            instrument_id,
+        )
+        raise ValueError(f"Not enough data found for symbol '{symbol}'.")
+
+    frame = frame.set_index("Date").sort_index()
+    if requested_rows > 0:
+        frame = frame.tail(requested_rows)
+    if frame.empty:
+        logger.error(
+            "External response service=etoro endpoint=candles "
+            "symbol=%s instrument_id=%s tail_rows=0",
+            symbol.upper(),
+            instrument_id,
+        )
+        raise ValueError(f"Not enough data found for symbol '{symbol}'.")
+
+    logger.info(
+        "External response service=etoro endpoint=candles symbol=%s instrument_id=%s rows=%s",
+        symbol.upper(),
+        instrument_id,
+        len(frame),
+    )
+    return frame
+
+
 def fetch_x_sentiment_scores(symbol: str, days: list[date]) -> dict[date, float]:
     """Return sentiment scores for each day in range [-1, 1].
 
@@ -1013,6 +1247,19 @@ def fetch_fundamental_metrics(symbol: str) -> FundamentalMetrics:
     if provider == "massive":
         return _fetch_massive_fundamentals(symbol)
 
+    if provider == "etoro":
+        logger.info(
+            "Skipping fundamentals lookup because service=etoro does not provide "
+            "fundamentals endpoint in this application symbol=%s",
+            symbol.upper(),
+        )
+        return FundamentalMetrics(
+            pe_ratio=None,
+            eps=None,
+            debt_to_equity=None,
+            market_cap=None,
+        )
+
     if provider != "yfinance":
         logger.error(
             "Fundamentals invalid provider selection symbol=%s provider=%s",
@@ -1020,7 +1267,7 @@ def fetch_fundamental_metrics(symbol: str) -> FundamentalMetrics:
             provider,
         )
         raise ValueError(
-            "MARKETS_DATA_PROVIDER must be one of: yfinance, stooq, alpha_vantage, massive"
+            "MARKETS_DATA_PROVIDER must be one of: yfinance, stooq, alpha_vantage, massive, etoro"
         )
 
     try:
