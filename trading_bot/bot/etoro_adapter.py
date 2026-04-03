@@ -33,14 +33,18 @@ class EtoroAdapter:
     ) -> dict[str, Any]:
         payload = None if body is None else json.dumps(body).encode("utf-8")
         endpoint = f"{self.base_url}{path}"
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": self.api_key,
+            "x-request-id": str(uuid.uuid4()),
+        }
+        if self.user_key:
+            headers["x-user-key"] = self.user_key
         request = Request(
             endpoint,
             data=payload,
             method=method,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
         )
         try:
             with urlopen(request, timeout=15) as response:
@@ -244,7 +248,7 @@ class EtoroAdapter:
 
 def build_etoro_adapter() -> EtoroAdapter:
     api_key = os.getenv("ETORO_API_KEY")
-    base_url = os.getenv("ETORO_API_BASE_URL", "https://api.etoro.com")
+    base_url = os.getenv("ETORO_API_BASE_URL", "https://public-api.etoro.com/api/v1")
     if not api_key:
         raise ValueError("ETORO_API_KEY is missing")
     return EtoroAdapter(
