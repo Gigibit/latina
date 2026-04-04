@@ -638,6 +638,40 @@ def test_get_candle_history_etoro_raises_when_instrument_missing(monkeypatch):
         data_sources.get_candle_history(symbol="AAPL")
 
 
+def test_get_candle_history_etoro_market_search_backoff_is_incremental_per_ticker(monkeypatch):
+    sleeps: list[int] = []
+    call_count = {"value": 0}
+
+    def fake_urlopen(request, timeout):
+        if "/market-data/search" in request.full_url:
+            call_count["value"] += 1
+            raise HTTPError(
+                url=request.full_url,
+                code=429,
+                msg="Too Many Requests",
+                hdrs=None,
+                fp=None,
+            )
+        raise AssertionError(
+            "Candles endpoint should not be called when market search keeps failing."
+        )
+
+    monkeypatch.setenv("MARKETS_DATA_PROVIDER", "etoro")
+    monkeypatch.setenv("ETORO_API_KEY", "api-key")
+    monkeypatch.setenv("ETORO_USER_KEY", "user-key")
+    monkeypatch.setenv("RETRY_BACKOFFF_ENABLED", "true")
+    monkeypatch.setattr(data_sources, "urlopen", fake_urlopen)
+    monkeypatch.setattr(data_sources.time, "sleep", lambda seconds: sleeps.append(seconds))
+    data_sources._ETORO_TICKER_BACKOFF_SECONDS.clear()
+    data_sources._ETORO_TICKER_BACKOFF_SECONDS["AAPL"] = 299
+
+    with pytest.raises(RuntimeError, match="Unable to resolve instrumentId"):
+        data_sources.get_candle_history(symbol="AAPL")
+
+    assert call_count["value"] == 3
+    assert sleeps == [300, 300]
+
+
 def test_get_candle_history_yfinance_falls_back_to_stooq(monkeypatch):
     csv_payload = """Date,Open,High,Low,Close,Volume
 2024-01-02,10,11,9,10.5,100

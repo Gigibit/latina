@@ -18,6 +18,8 @@ from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
 
+_ETORO_TICKER_BACKOFF_SECONDS: dict[str, int] = {}
+
 
 @dataclass
 class MarketSnapshot:
@@ -369,6 +371,21 @@ def _get_env_int(name: str, default: int) -> int:
 def _sleep_with_exponential_backoff(attempt: int) -> None:
     delay_seconds = min(2 ** (attempt - 1), 8)
     time.sleep(delay_seconds)
+
+
+def _sleep_with_incremental_ticker_backoff(symbol: str, *, max_seconds: int = 300) -> int:
+    normalized_symbol = symbol.upper().strip()
+    current_delay = _ETORO_TICKER_BACKOFF_SECONDS.get(normalized_symbol, 0)
+    next_delay = min(current_delay + 1, max_seconds)
+    _ETORO_TICKER_BACKOFF_SECONDS[normalized_symbol] = next_delay
+    logger.warning(
+        "eToro market search ticker backoff applied symbol=%s delay_seconds=%s max_seconds=%s",
+        normalized_symbol,
+        next_delay,
+        max_seconds,
+    )
+    time.sleep(next_delay)
+    return next_delay
 
 
 def get_market_snapshot(symbol: str, lookback_days: int = 90) -> MarketSnapshot:
@@ -1020,7 +1037,7 @@ def _get_etoro_candle_history(
                 max_attempts,
             )
             if should_retry:
-                _sleep_with_exponential_backoff(attempt)
+                _sleep_with_incremental_ticker_backoff(symbol)
                 continue
             logger.error(
                 "External response service=etoro endpoint=market_search symbol=%s error=%s",
@@ -1058,6 +1075,7 @@ def _get_etoro_candle_history(
             candidate_id = item.get("instrumentId")
             if item_symbol == normalized_symbol and isinstance(candidate_id, int):
                 instrument_id = candidate_id
+                _ETORO_TICKER_BACKOFF_SECONDS.pop(normalized_symbol, None)
                 break
         if instrument_id is None:
             for item in items:
@@ -1066,6 +1084,7 @@ def _get_etoro_candle_history(
                 candidate_id = item.get("instrumentId")
                 if isinstance(candidate_id, int):
                     instrument_id = candidate_id
+                    _ETORO_TICKER_BACKOFF_SECONDS.pop(normalized_symbol, None)
                     break
     if instrument_id is None:
         logger.error(
