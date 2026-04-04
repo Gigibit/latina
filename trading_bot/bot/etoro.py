@@ -81,7 +81,69 @@ def _record_execution(symbol: str, action: str) -> None:
     _save_state(state)
 
 
-def execute_etoro_action(symbol: str, action: str, confidence: int | float | None = None) -> dict:
+def _is_probably_convenient_price(
+    action: str,
+    current_price: float | None,
+    reference_price: float | None,
+) -> tuple[bool, str]:
+    evaluator_enabled = _is_env_flag_enabled("ETORO_ORDER_PRICE_EVALUATOR_ENABLED", False)
+    if not evaluator_enabled:
+        return True, "price evaluator disabled"
+    if action not in {"BUY", "SELL"}:
+        return True, f"price evaluator not applicable for action={action}"
+    if current_price is None or reference_price is None:
+        return True, "price evaluator skipped because prices are missing"
+    if current_price <= 0 or reference_price <= 0:
+        message = (
+            "Invalid non-positive price provided to order price evaluator: "
+            f"current_price={current_price} reference_price={reference_price}"
+        )
+        logger.error(message)
+        return False, message
+
+    try:
+        max_deviation_pct = float(os.getenv("ETORO_ORDER_PRICE_MAX_DEVIATION_PCT", "0.50"))
+    except ValueError as exc:
+        message = (
+            "Invalid ETORO_ORDER_PRICE_MAX_DEVIATION_PCT value; expected float percentage. "
+            f"error={exc}"
+        )
+        logger.error(message)
+        return False, message
+    max_deviation_ratio = max_deviation_pct / 100
+    if action == "BUY":
+        max_buy_price = reference_price * (1 + max_deviation_ratio)
+        is_convenient = current_price <= max_buy_price
+        reason = (
+            "BUY price evaluator accepted order"
+            if is_convenient
+            else (
+                "BUY price evaluator rejected order: "
+                f"current_price={current_price:.6f} exceeds max_buy_price={max_buy_price:.6f}"
+            )
+        )
+        return is_convenient, reason
+
+    min_sell_price = reference_price * (1 - max_deviation_ratio)
+    is_convenient = current_price >= min_sell_price
+    reason = (
+        "SELL price evaluator accepted order"
+        if is_convenient
+        else (
+            "SELL price evaluator rejected order: "
+            f"current_price={current_price:.6f} is below min_sell_price={min_sell_price:.6f}"
+        )
+    )
+    return is_convenient, reason
+
+
+def execute_etoro_action(
+    symbol: str,
+    action: str,
+    confidence: int | float | None = None,
+    current_price: float | None = None,
+    reference_price: float | None = None,
+) -> dict:
     normalized_action = action.upper()
     logger.debug(
         "Evaluating this symbol for eToro execution: symbol=%s action=%s",
@@ -116,6 +178,31 @@ def execute_etoro_action(symbol: str, action: str, confidence: int | float | Non
     if normalized_action == "HOLD":
         _record_execution(symbol, normalized_action)
         return {"status": "skipped", "reason": "HOLD action enabled: no order sent"}
+
+    price_is_convenient, price_reason = _is_probably_convenient_price(
+        normalized_action,
+        current_price=current_price,
+        reference_price=reference_price,
+    )
+    if not price_is_convenient:
+        logger.error(
+            "eToro execution skipped by price evaluator for symbol=%s action=%s reason=%s",
+            symbol.upper(),
+            normalized_action,
+            price_reason,
+        )
+        return {
+            "status": "skipped",
+            "reason": "Order price evaluator rejected execution",
+            "price_evaluation": price_reason,
+        }
+    if _http_log_enabled():
+        logger.debug(
+            "eToro price evaluator for symbol=%s action=%s: %s",
+            symbol.upper(),
+            normalized_action,
+            price_reason,
+        )
 
     base_url = os.getenv("ETORO_API_BASE_URL", "").rstrip("/")
     api_key = os.getenv("ETORO_API_KEY")

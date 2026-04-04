@@ -351,10 +351,14 @@ def generate_suggestion(symbol: str, user_risk_profile: str = "medium") -> dict:
     )
 
     decision = decider.decide(prompt)
+    current_price = float(query_prices[-1]) if query_prices else None
+    reference_price = float(technical.sma_20) if technical.sma_20 else None
     etoro_result = execute_etoro_action(
         symbol=symbol,
         action=str(decision.get("action", "HOLD")),
         confidence=decision.get("confidence"),
+        current_price=current_price,
+        reference_price=reference_price,
     )
     return {
         "symbol": symbol.upper(),

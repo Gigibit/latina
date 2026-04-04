@@ -119,3 +119,54 @@ def test_etoro_returns_error_when_env_is_invalid(monkeypatch):
 
     assert result["status"] == "error"
     assert "ETORO_ENV" in result["reason"]
+
+
+def test_etoro_order_price_evaluator_skips_buy_when_price_is_not_convenient(monkeypatch):
+    monkeypatch.setenv("ETORO_AUTOTRADE_ENABLED", "true")
+    monkeypatch.setenv("ETORO_ENABLE_BUY_ACTION", "true")
+    monkeypatch.setenv("ETORO_ORDER_PRICE_EVALUATOR_ENABLED", "true")
+    monkeypatch.setenv("ETORO_ORDER_PRICE_MAX_DEVIATION_PCT", "0.50")
+
+    result = execute_etoro_action(
+        symbol="AAPL",
+        action="BUY",
+        current_price=101.0,
+        reference_price=100.0,
+    )
+
+    assert result["status"] == "skipped"
+    assert "price evaluator" in result["reason"].lower()
+    assert "exceeds max_buy_price" in result["price_evaluation"]
+
+
+def test_etoro_order_price_evaluator_allows_buy_when_price_is_convenient(monkeypatch):
+    monkeypatch.setenv("ETORO_AUTOTRADE_ENABLED", "true")
+    monkeypatch.setenv("ETORO_ENABLE_BUY_ACTION", "true")
+    monkeypatch.setenv("ETORO_ORDER_PRICE_EVALUATOR_ENABLED", "true")
+    monkeypatch.setenv("ETORO_ORDER_PRICE_MAX_DEVIATION_PCT", "0.50")
+    monkeypatch.setenv("ETORO_API_BASE_URL", "https://api.etoro.test")
+    monkeypatch.setenv("ETORO_API_KEY", "secret")
+    monkeypatch.setenv("ETORO_USER_KEY", "user-secret")
+    monkeypatch.setenv("ETORO_INSTRUMENT_ID", "1001")
+    monkeypatch.setenv("ETORO_NEXT_SUGGESTION_WAIT_SECONDS", "0")
+
+    class DummyResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"ok": true}'
+
+    monkeypatch.setattr("trading_bot.bot.etoro.urlopen", lambda request, timeout: DummyResponse())
+
+    result = execute_etoro_action(
+        symbol="AAPL",
+        action="BUY",
+        current_price=100.3,
+        reference_price=100.0,
+    )
+
+    assert result["status"] == "executed"
