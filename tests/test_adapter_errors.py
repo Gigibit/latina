@@ -237,3 +237,50 @@ def test_build_etoro_adapter_allows_missing_user_key_for_non_public_api(monkeypa
     adapter = build_etoro_adapter()
 
     assert adapter.user_key == ""
+
+
+def test_etoro_adapter_enables_watchlist_capability_when_user_key_present():
+    adapter = EtoroAdapter(
+        api_key="token",
+        base_url="https://public-api.etoro.com/api/v1",
+        user_key="user-key",
+    )
+
+    assert adapter.supported_capabilities["supportsWatchlists"] is True
+
+
+def test_etoro_adapter_get_watchlists_returns_symbols(monkeypatch):
+    monkeypatch.setattr(
+        "trading_bot.bot.etoro_adapter.get_trending_tickers_from_etoro",
+        lambda limit=100: ["TSLA", "NVDA"],
+    )
+    adapter = EtoroAdapter(
+        api_key="token",
+        base_url="https://public-api.etoro.com/api/v1",
+        user_key="user-key",
+    )
+
+    result = adapter.getWatchlists()
+
+    assert result == [{"name": "etoro_watchlists", "symbols": ["TSLA", "NVDA"]}]
+
+
+def test_etoro_adapter_get_watchlists_logs_and_returns_empty_on_error(monkeypatch, caplog):
+    def raise_runtime_error(limit=100):
+        raise RuntimeError("rate_limited")
+
+    monkeypatch.setattr(
+        "trading_bot.bot.etoro_adapter.get_trending_tickers_from_etoro",
+        raise_runtime_error,
+    )
+    adapter = EtoroAdapter(
+        api_key="token",
+        base_url="https://public-api.etoro.com/api/v1",
+        user_key="user-key",
+    )
+
+    with caplog.at_level("ERROR"):
+        result = adapter.getWatchlists()
+
+    assert result == []
+    assert "eToro watchlists fetch failed" in caplog.text
