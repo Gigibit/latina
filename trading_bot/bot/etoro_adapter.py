@@ -8,6 +8,8 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from trading_bot.bot.data_sources import get_trending_tickers_from_etoro
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,7 +31,7 @@ class EtoroAdapter:
             "supportsFeeds": False,
             "supportsSocialAnalytics": False,
             "supportsCuratedLists": False,
-            "supportsWatchlists": False,
+            "supportsWatchlists": bool(self.user_key),
             "supportsAgentPortfolios": False,
             "supportsMarketMonitorStreaming": bool(self.ws_url and self.user_key),
         }
@@ -153,11 +155,15 @@ class EtoroAdapter:
         return history if isinstance(history, list) else []
 
     def getWatchlists(self) -> list[dict[str, Any]]:
-        logger.error(
-            "eToro watchlists fetch skipped: endpoint not enabled because only documented and "
-            "explicitly implemented routes are allowed."
-        )
-        return []
+        try:
+            symbols = get_trending_tickers_from_etoro(limit=100)
+        except Exception as exc:
+            logger.error(
+                "eToro watchlists fetch failed: unable to resolve watchlist symbols error=%s",
+                exc,
+            )
+            return []
+        return [{"name": "etoro_watchlists", "symbols": symbols}]
 
     def getCuratedLists(self) -> list[dict[str, Any]]:
         logger.error(
